@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-17",
+  "description": "Example Telegram A2A bot registry. Copy this file to a private path with live chat and bot IDs, then set A2A_BOT_REGISTRY_PATH.",
+  "groups": {
+    "example-dev": {
+      "chat_id": -1000000000000,
+      "title": "ExampleDev"
+    }
+  },
+  "bots": [
+    {
+      "canonical": "MacMiniCodex",
+      "username": "ExampleCodexBot",
+      "id": 1000000001,
+      "aliases": ["MacMiniCodex", "macminicodex", "ExampleCodexBot", "@ExampleCodexBot"],
+      "groups": ["example-dev"],
+      "harness": "codex",
+      "trusted": true
+    },
+    {
+      "canonical": "iMacCodex",
+      "username": "ExampleCodex2Bot",
+      "id": 1000000002,
+      "aliases": ["iMacCodex", "imaccodex", "ExampleCodex2Bot", "@ExampleCodex2Bot"],
+      "groups": ["example-dev"],
+      "harness": "codex",
+      "trusted": true
+    },
+    {
+      "canonical": "MacMiniClaude",
+      "username": "ExampleClaudeBot",
+      "id": 1000000003,
+      "aliases": ["MacMiniClaude", "macminiclaude", "ExampleClaudeBot", "@ExampleClaudeBot"],
+      "groups": ["example-dev"],
+      "harness": "claude",
+      "trusted": true
+    },
+    {
+      "canonical": "iMacClaude",
+      "username": "ExampleClaude2Bot",
+      "id": 1000000004,
+      "aliases": ["iMacClaude", "imacclaude", "ExampleClaude2Bot", "@ExampleClaude2Bot"],
+      "groups": ["example-dev"],
+      "harness": "claude",
+      "trusted": true
+    },
+    {
+      "canonical": "ExampleUtilityBot",
+      "username": "ExampleUtilityBot",
+      "id": 1000000005,
+      "aliases": ["ExampleUtilityBot", "exampleutilitybot", "@ExampleUtilityBot"],
+      "groups": ["example-dev"],
+      "trusted": true
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ella.codex-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/codex-telegram-bridge/start-bridge.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/codex-telegram-bridge</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/path/to/codex-telegram-bridge/logs/bridge-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/codex-telegram-bridge/logs/bridge-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/home-or-users-dir-for-service-account</string>
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+[Unit]
+Description=Codex Telegram Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex
+WorkingDirectory=/opt/ella/codex-telegram-bridge
+EnvironmentFile=/opt/ella/codex-telegram-bridge/.env
+ExecStart=/opt/ella/codex-telegram-bridge/start-bridge.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
