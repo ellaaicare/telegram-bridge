@@ -156,7 +156,24 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 BRIDGE_VERSION = os.environ.get("BRIDGE_VERSION", "3.5.0")
 BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "a2a-quiet-status-pr685.7681cf5")
-BOT_TOKEN = os.environ.get("CLAUDE_TELEGRAM_BOT_TOKEN", "")
+HARNESS_CLI = os.environ.get("HARNESS_CLI", "claude").strip().lower() or "claude"
+HARNESS_LABEL = os.environ.get("HARNESS_LABEL", "").strip() or {
+    "claude": "Claude Code",
+    "opencode": "OpenCode",
+    "kilo": "Kilo Code",
+}.get(HARNESS_CLI, HARNESS_CLI.title())
+HARNESS_SERVICE_NAME = os.environ.get("HARNESS_SERVICE_NAME", "").strip() or f"{HARNESS_CLI}-telegram-bridge"
+HARNESS_TOKEN_ENV = os.environ.get("HARNESS_TOKEN_ENV", "").strip() or {
+    "claude": "CLAUDE_TELEGRAM_BOT_TOKEN",
+    "opencode": "OPENCODE_TELEGRAM_BOT_TOKEN",
+    "kilo": "KILOCODE_TELEGRAM_BOT_TOKEN",
+}.get(HARNESS_CLI, "TELEGRAM_BOT_TOKEN")
+HARNESS_AGENT = os.environ.get("HARNESS_AGENT", "").strip()
+HARNESS_SESSION_BACKEND = os.environ.get(
+    "HARNESS_SESSION_BACKEND",
+    "claude" if HARNESS_CLI == "claude" else "bridge",
+).strip().lower()
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or os.environ.get(HARNESS_TOKEN_ENV, "").strip()
 A2A_BOT_REGISTRY = _load_a2a_registry()
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
 ALLOWED_SENDER_IDS = _parse_int_set(
@@ -178,7 +195,7 @@ POLL_TIMEOUT = 60
 STATE_FILE = Path(
     os.environ.get(
         "BRIDGE_STATE_DIR",
-        str(Path.home() / ".local" / "state" / "claude-telegram-bridge"),
+        str(Path.home() / ".local" / "state" / HARNESS_SERVICE_NAME),
     )
 ) / "state.json"
 HOME = os.environ.get("BRIDGE_DEFAULT_FOLDER", str(Path.home()))
@@ -1092,9 +1109,19 @@ def get_claude_sessions(folder_path: str | None = None) -> list[dict]:
         return []
 
 
+def get_harness_sessions(folder_path: str | None = None) -> list[dict]:
+    if HARNESS_SESSION_BACKEND == "claude":
+        return get_claude_sessions(folder_path)
+    return []
+
+
+def get_harness_session_label(entry: dict) -> str:
+    return str(entry.get("summary") or entry.get("firstPrompt") or "").strip()
+
+
 def get_latest_session_id(folder_path: str | None = None) -> str | None:
     """Get the most recent session ID for a folder."""
-    sessions = get_claude_sessions(folder_path)
+    sessions = get_harness_sessions(folder_path)
     if sessions:
         return sessions[0]["sessionId"]
     return state.get("default_session_id")
@@ -1164,8 +1191,8 @@ def find_session(query: str) -> list[str]:
             matches.append(sid)
             seen.add(sid)
 
-    # ID prefix match in Claude CLI sessions
-    for entry in get_claude_sessions():
+    # ID prefix match in harness CLI sessions
+    for entry in get_harness_sessions():
         sid = entry["sessionId"]
         if sid not in seen and sid.startswith(query):
             matches.append(sid)
@@ -1183,14 +1210,13 @@ def find_session(query: str) -> list[str]:
             matches.append(sid)
             seen.add(sid)
 
-    # Summary/firstPrompt match in Claude CLI sessions
-    for entry in get_claude_sessions():
+    # Summary/firstPrompt match in harness CLI sessions
+    for entry in get_harness_sessions():
         sid = entry["sessionId"]
         if sid in seen:
             continue
-        summary = entry.get("summary", "").lower()
-        first = entry.get("firstPrompt", "").lower()
-        if query_lower in summary or query_lower in first:
+        label = get_harness_session_label(entry).lower()
+        if query_lower in label:
             matches.append(sid)
             seen.add(sid)
 
@@ -1449,6 +1475,38 @@ async def cleanup_old_media():
 
 # --- Claude Code ---
 
+def _extract_event_session_id(event: dict) -> str | None:
+    candidates = [
+        event.get("session_id"),
+        event.get("sessionId"),
+        event.get("sessionID"),
+        (event.get("session") or {}).get("id") if isinstance(event.get("session"), dict) else None,
+        (event.get("message") or {}).get("session_id") if isinstance(event.get("message"), dict) else None,
+        (event.get("message") or {}).get("sessionId") if isinstance(event.get("message"), dict) else None,
+        (event.get("message") or {}).get("sessionID") if isinstance(event.get("message"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _extract_event_text(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("result", "text", "content", "message"):
+            extracted = _extract_event_text(value.get(key))
+            if extracted:
+                return extracted
+        return ""
+    if isinstance(value, list):
+        parts = [_extract_event_text(item) for item in value]
+        joined = "\n".join(part for part in parts if part)
+        return joined.strip()
+    return ""
+
+
 async def run_claude(
     prompt: str,
     chat_id: int,
@@ -1457,7 +1515,7 @@ async def run_claude(
     suppress_progress_messages: bool = False,
     suppress_footer: bool = False,
 ) -> tuple[str, str | None]:
-    """Run Claude Code CLI with streaming. Sends progress to Telegram as events arrive.
+    """Run the configured harness CLI with streaming. Sends progress to Telegram as events arrive.
 
     Uses --output-format stream-json to read events line-by-line.
     Watchdog coroutine monitors for stuck tool calls (started by _process_prompt).
@@ -1465,32 +1523,46 @@ async def run_claude(
     """
     global _active_claude_proc, _watchdog_current_tool, _watchdog_last_progress
 
-    cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose"]
+    cwd = state["active_folder"]
+    proc_env = os.environ.copy()
+    sid = None if new_session else (session_id or state.get("default_session_id"))
 
-    if not new_session:
-        sid = session_id or state.get("default_session_id")
+    if HARNESS_CLI == "claude":
+        cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose"]
         if sid:
             cmd.extend(["--resume", sid])
+        cmd.extend([
+            "--dangerously-skip-permissions",
+            "--append-system-prompt",
+            "IMPORTANT: You are running inside the Telegram bridge service. "
+            "NEVER run systemctl, service, or process management commands "
+            "(systemctl, kill, pkill, service, restart, stop). "
+            "These will kill your own host process and crash the bridge. "
+            "If asked about service status, explain you cannot check from inside the bridge.",
+            "-p", prompt,
+        ])
+        if BRIDGE_MODEL:
+            proc_env["BRIDGE_MODEL"] = BRIDGE_MODEL
+            proc_env["ANTHROPIC_MODEL"] = BRIDGE_MODEL
+    elif HARNESS_CLI in {"opencode", "kilo"}:
+        cmd = [HARNESS_CLI, "run", "--format", "json", "--dir", cwd]
+        if sid:
+            cmd.extend(["--session", sid])
+        if BRIDGE_MODEL:
+            cmd.extend(["-m", BRIDGE_MODEL])
+        if HARNESS_AGENT:
+            cmd.extend(["--agent", HARNESS_AGENT])
+        cmd.append(prompt)
+    else:
+        return f"Error: unsupported harness `{HARNESS_CLI}`", None
 
-    cmd.extend([
-        "--dangerously-skip-permissions",
-        "--append-system-prompt",
-        "IMPORTANT: You are running inside the Telegram bridge service. "
-        "NEVER run systemctl, service, or process management commands "
-        "(systemctl, kill, pkill, service, restart, stop). "
-        "These will kill your own host process and crash the bridge. "
-        "If asked about service status, explain you cannot check from inside the bridge.",
-        "-p", prompt,
-    ])
-
-    cwd = state["active_folder"]
-    log.info(f"Claude in {cwd}: {' '.join(cmd[:8])}... | prompt: {prompt[:80]}")
+    log.info(f"{HARNESS_LABEL} in {cwd}: {' '.join(cmd[:8])}... | prompt: {prompt[:80]}")
 
     result_text = None
     result_session_id = None
     result_duration_ms = 0
     last_activity_update = 0
-    tool_uses = []  # Track what Claude is doing
+    tool_uses = []  # Track what the harness is doing
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1498,6 +1570,7 @@ async def run_claude(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=proc_env,
             # Increase buffer limit to 4MB to handle large stream-json events
             limit=4 * 1024 * 1024,
         )
@@ -1515,15 +1588,18 @@ async def run_claude(
                 continue
 
             event_type = event.get("type")
+            generic_session_id = _extract_event_session_id(event)
+            if generic_session_id:
+                result_session_id = generic_session_id
 
-            if event_type == "system" and event.get("subtype") == "init":
+            if HARNESS_CLI == "claude" and event_type == "system" and event.get("subtype") == "init":
                 result_session_id = event.get("session_id")
                 log.info(f"Stream started: session={result_session_id}")
 
-            elif event_type == "assistant":
+            elif HARNESS_CLI == "claude" and event_type == "assistant":
                 msg = event.get("message", {})
                 content = msg.get("content", [])
-                # Check for tool use — report what Claude is doing
+                # Check for tool use — report what the harness is doing
                 for block in content:
                     if block.get("type") == "tool_use":
                         tool_name = block.get("name", "")
@@ -1546,19 +1622,23 @@ async def run_claude(
                         }
                         _watchdog_last_progress = time.time()
 
-            elif event_type == "tool_result":
+            elif HARNESS_CLI == "claude" and event_type == "tool_result":
                 # Tool completed — clear watchdog tracking and mark progress
                 _watchdog_current_tool = None
                 _watchdog_last_progress = time.time()
 
             elif event_type == "result":
                 _watchdog_current_tool = None  # Clear on final result too
-                result_text = event.get("result", "")
-                result_session_id = event.get("session_id", result_session_id)
+                result_text = _extract_event_text(event.get("result") or event.get("text") or event)
+                result_session_id = generic_session_id or event.get("session_id", result_session_id)
                 result_duration_ms = event.get("duration_ms", 0)
                 is_error = event.get("is_error", False)
                 if is_error:
                     result_text = f"Error: {result_text}"
+            elif HARNESS_CLI in {"opencode", "kilo"}:
+                extracted_text = _extract_event_text(event)
+                if extracted_text and event_type in {"assistant", "message", "output"}:
+                    result_text = extracted_text
 
         # Wait for process to fully exit
         await proc.wait()
@@ -1590,7 +1670,7 @@ async def run_claude(
 
     except Exception as e:
         _active_claude_proc = None
-        log.error(f"Claude stream error: {e}")
+        log.error(f"{HARNESS_LABEL} stream error: {e}")
         return f"Error: {e}", None
 
 
@@ -1907,16 +1987,20 @@ def _parse_watchdog_verdict(output: str) -> dict:
 
 async def handle_command(chat_id: int, msg_id: int, text: str):
     """Handle /commands."""
+    global BRIDGE_MODEL, HARNESS_AGENT
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].lower().split("@")[0]
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/help", "/start"):
         folder_name = get_folder_display_name(state["active_folder"])
+        agent_command = ""
+        if HARNESS_CLI in {"opencode", "kilo"}:
+            agent_command = "`/agent [name|off]` — Show/set harness agent profile\n"
         await send_message(chat_id, (
-            f"*Claude Code Telegram Bridge v3.4*\n"
+            f"*{HARNESS_LABEL} Telegram Bridge v{BRIDGE_VERSION}*\n"
             f"Active folder: `{folder_name}` (`{state['active_folder']}`)\n\n"
-            "Send any message, image, or file to chat with Claude Code.\n"
+            f"Send any message, image, or file to chat with {HARNESS_LABEL}.\n"
             "Photos, documents, and voice messages are supported.\n"
             "Session auto-continues the latest in current folder.\n\n"
             "*Folder Commands:*\n"
@@ -1934,7 +2018,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             "`/save [label]` \u2014 Bookmark session\n"
             "`/sessions` \u2014 List sessions for current folder\n"
             "`/resume <id|name>` \u2014 Resume by ID or name\n"
-            "`/interrupt [msg]` \u2014 Stop Claude mid-run; optional msg next\n\n"
+            "`/model [model-id|off]` \u2014 Show/set harness model override\n"
+            f"{agent_command}"
+            f"`/interrupt [msg]` \u2014 Stop {HARNESS_LABEL} mid-run; optional msg next\n\n"
             "*Job Dispatch:*\n"
             "`/dispatch [--node N] [--repo R] desc` \u2014 Create issue + launch worker\n"
             "`/jobs` \u2014 List active dispatch jobs\n"
@@ -2074,9 +2160,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             info = state["sessions"].get(sid, {})
             label = info.get("label", "")
             if not label:
-                cli_info = next((s for s in get_claude_sessions(path) if s["sessionId"] == sid), None)
+                cli_info = next((s for s in get_harness_sessions(path) if s["sessionId"] == sid), None)
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
             session_msg = f"\nContinuing session `{sid[:8]}`"
             if label:
                 session_msg += f" (_{label}_)"
@@ -2243,7 +2329,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             role = msg["role"]
             text = msg["text"]
             ts = msg.get("timestamp", "")[:16]  # trim to minutes
-            prefix = "You" if role == "user" else "Claude"
+            prefix = "You" if role == "user" else HARNESS_LABEL
 
             # Truncate long messages
             if len(text) > 500:
@@ -2306,7 +2392,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
     if cmd == "/sessions":
         folder = state["active_folder"]
         folder_name = get_folder_display_name(folder)
-        claude_sessions = get_claude_sessions()
+        harness_sessions = get_harness_sessions()
         seen = set()
         lines = [f"*Sessions in `{folder_name}`:*\n"]
 
@@ -2325,10 +2411,10 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             saved = "\U0001f4cc " if info.get("saved") else ""
             active = " \u2190 active" if sid == state["default_session_id"] else ""
 
-            cli_info = next((s for s in claude_sessions if s["sessionId"] == sid), None)
+            cli_info = next((s for s in harness_sessions if s["sessionId"] == sid), None)
             if cli_info:
                 if not label:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
                 msgs = max(msgs, cli_info.get("messageCount", 0))
 
             display = f"`{short}` {saved}{msgs} msgs{active}"
@@ -2336,19 +2422,17 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 display += f"\n  _{label}_"
             lines.append(display)
 
-        # Claude CLI sessions for this folder
-        for entry in claude_sessions:
+        # Harness CLI sessions for this folder
+        for entry in harness_sessions:
             sid = entry["sessionId"]
             if sid in seen:
                 continue
             seen.add(sid)
             short = sid[:8]
             msgs = entry.get("messageCount", 0)
-            summary = entry.get("summary", "")
-            first_prompt = entry.get("firstPrompt", "")[:40]
+            label = get_harness_session_label(entry)[:40]
             active = " \u2190 active" if sid == state.get("default_session_id") else ""
             display = f"`{short}` {msgs} msgs{active}"
-            label = summary or first_prompt
             if label:
                 display += f"\n  _{label}_"
             lines.append(display)
@@ -2376,9 +2460,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             label = info.get("label", "")
             msgs = info.get("message_count", 0)
             if not label:
-                cli_info = next((s for s in get_claude_sessions() if s["sessionId"] == matches[0]), None)
+                cli_info = next((s for s in get_harness_sessions() if s["sessionId"] == matches[0]), None)
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
                     msgs = cli_info.get("messageCount", 0)
             name = f" (_{label}_)" if label else ""
             await send_message(chat_id, f"Resumed `{matches[0][:8]}`{name} \u2014 {msgs} msgs", reply_to=msg_id)
@@ -2388,9 +2472,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 info = state["sessions"].get(s, {})
                 label = info.get("label", "")
                 if not label:
-                    cli_info = next((e for e in get_claude_sessions() if e["sessionId"] == s), None)
+                    cli_info = next((e for e in get_harness_sessions() if e["sessionId"] == s), None)
                     if cli_info:
-                        label = cli_info.get("summary", "")
+                        label = get_harness_session_label(cli_info)
                 items.append(f"`{s[:8]}` _{label}_" if label else f"`{s[:8]}`")
             await send_message(chat_id, "Multiple matches:\n" + "\n".join(items) + "\n\nBe more specific.", reply_to=msg_id)
         else:
@@ -2403,29 +2487,34 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         folder = state["active_folder"]
         folder_name = get_folder_display_name(folder)
         n_sessions = len(state.get("sessions", {}))
-        n_cli = len(get_claude_sessions())
+        n_cli = len(get_harness_sessions())
         n_folders = len(state.get("folders", {}))
         saved_count = sum(1 for s in state["sessions"].values() if s.get("saved"))
         queue_size = _prompt_queue.qsize() if _prompt_queue else 0
         busy = _active_claude_proc is not None and _active_claude_proc.returncode is None
         lines = [
             "*Bridge Status*",
+            f"Harness: `{HARNESS_LABEL}` (`{HARNESS_CLI}`)",
             f"Version: `{BRIDGE_VERSION}`",
             f"Build: `{BRIDGE_BUILD}`",
             f"Folder: `{folder_name}` (`{folder}`)",
             f"Folders: {n_folders} registered",
-            f"Sessions: {n_sessions} bridge + {n_cli} CLI ({saved_count} saved)",
+            f"Sessions: {n_sessions} bridge + {n_cli} external ({saved_count} saved)",
             f"Queue: {queue_size} pending | {'busy' if busy else 'idle'}",
             f"Timeout: {CLAUDE_TIMEOUT}s",
         ]
+        if BRIDGE_MODEL:
+            lines.append(f"Model override: `{BRIDGE_MODEL}`")
+        if HARNESS_AGENT:
+            lines.append(f"Agent profile: `{HARNESS_AGENT}`")
         if sid:
             lines.append(f"Active: `{sid[:8]}`")
             info = state["sessions"].get(sid, {})
             label = info.get("label", "")
             if not label:
-                cli_info = next((s for s in get_claude_sessions() if s["sessionId"] == sid), None)
+                cli_info = next((s for s in get_harness_sessions() if s["sessionId"] == sid), None)
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
             if label:
                 lines.append(f"  _{label}_")
         else:
@@ -2436,23 +2525,65 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         return
 
     if cmd == "/model":
-        global BRIDGE_MODEL
         if not arg:
-            await send_message(chat_id, (
-                f"*Bridge model:* `{BRIDGE_MODEL}`\n\n"
-                "*Available models:*\n"
-                "`glm-5.1:cloud` — GLM 5.1 Cloud (Ollama)\n"
-                "`claude-opus-4-6` — Most capable\n"
-                "`claude-sonnet-4-5-20250929` — Fast + capable\n"
-                "`claude-haiku-4-5-20251001` — Fastest + cheapest\n\n"
-                "Usage: `/model <model-id>`\n"
-                "Sets BRIDGE\\_MODEL env var for this session."
-            ), reply_to=msg_id)
+            current = BRIDGE_MODEL or "default"
+            lines = [
+                f"*{HARNESS_LABEL} model override:* `{current}`",
+                "",
+            ]
+            if HARNESS_CLI == "claude":
+                lines.extend([
+                    "*Common Claude models:*",
+                    "`claude-opus-4-6` — Most capable",
+                    "`claude-sonnet-4-5-20250929` — Fast + capable",
+                    "`claude-haiku-4-5-20251001` — Fastest + cheapest",
+                    "",
+                    "Applied via `ANTHROPIC_MODEL`/`BRIDGE_MODEL` for the next run.",
+                ])
+            else:
+                lines.append(f"Applied as `-m <model>` to `{HARNESS_CLI} run`.")
+                if HARNESS_AGENT:
+                    lines.append(f"Current agent profile: `{HARNESS_AGENT}`")
+            lines.extend([
+                "",
+                "Usage: `/model <model-id>`",
+                "Clear override: `/model off`",
+            ])
+            await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
             return
-        # Set model
         model = arg.strip()
+        if model.lower() in {"off", "default", "clear", "none"}:
+            BRIDGE_MODEL = ""
+            await send_message(chat_id, f"{HARNESS_LABEL} model override cleared.", reply_to=msg_id)
+            return
         BRIDGE_MODEL = model
-        await send_message(chat_id, f"Bridge model set to `{model}` (next prompt)", reply_to=msg_id)
+        applied_as = "ANTHROPIC_MODEL/BRIDGE_MODEL" if HARNESS_CLI == "claude" else f"{HARNESS_CLI} run -m"
+        await send_message(chat_id, f"{HARNESS_LABEL} model set to `{model}` for the next run via `{applied_as}`.", reply_to=msg_id)
+        return
+
+    if cmd == "/agent":
+        if HARNESS_CLI not in {"opencode", "kilo"}:
+            await send_message(chat_id, f"`/agent` is not supported for `{HARNESS_CLI}`.", reply_to=msg_id)
+            return
+        if not arg:
+            current = HARNESS_AGENT or "default"
+            await send_message(
+                chat_id,
+                (
+                    f"*{HARNESS_LABEL} agent profile:* `{current}`\n\n"
+                    "Usage: `/agent <name>`\n"
+                    "Clear override: `/agent off`"
+                ),
+                reply_to=msg_id,
+            )
+            return
+        agent = arg.strip()
+        if agent.lower() in {"off", "default", "clear", "none"}:
+            HARNESS_AGENT = ""
+            await send_message(chat_id, f"{HARNESS_LABEL} agent profile cleared.", reply_to=msg_id)
+            return
+        HARNESS_AGENT = agent
+        await send_message(chat_id, f"{HARNESS_LABEL} agent profile set to `{agent}` for the next run.", reply_to=msg_id)
         return
 
     if cmd == "/watchdog":
@@ -2851,6 +2982,8 @@ async def poll_loop():
 
 async def recover_orphaned_claude():
     """On startup, check for orphaned Claude processes and notify user."""
+    if HARNESS_CLI != "claude":
+        return
     try:
         # Find any running claude --print processes
         proc = await asyncio.create_subprocess_exec(
@@ -2916,7 +3049,7 @@ async def recover_orphaned_claude():
 
 from fastapi import FastAPI
 
-app = FastAPI(title="Claude-Telegram Bridge", version=BRIDGE_VERSION)
+app = FastAPI(title=f"{HARNESS_LABEL}-Telegram Bridge", version=BRIDGE_VERSION)
 
 
 @app.on_event("startup")
@@ -2980,7 +3113,9 @@ async def health():
     sid = state.get("default_session_id")
     return {
         "status": "ok",
-        "service": "claude-telegram-bridge",
+        "service": HARNESS_SERVICE_NAME,
+        "harness_cli": HARNESS_CLI,
+        "harness_label": HARNESS_LABEL,
         "version": BRIDGE_VERSION,
         "build": BRIDGE_BUILD,
         "mode": "long-polling",
@@ -2988,7 +3123,9 @@ async def health():
         "folder_count": len(state.get("folders", {})),
         "default_session": sid[:8] if sid else None,
         "session_count": len(state.get("sessions", {})),
-        "cli_session_count": len(get_claude_sessions()),
+        "cli_session_count": len(get_harness_sessions()),
+        "model_override": BRIDGE_MODEL or None,
+        "agent_profile": HARNESS_AGENT or None,
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

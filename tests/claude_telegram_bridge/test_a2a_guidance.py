@@ -1,14 +1,22 @@
 import importlib.util
 import os
 import sys
+import uuid
 from pathlib import Path
 
 
-def load_bridge_module():
+def load_bridge_module(env_updates=None):
     repo_root = Path(__file__).resolve().parents[2]
     bridge_path = repo_root / "services" / "claude-telegram-bridge" / "main.py"
     os.environ.setdefault("BRIDGE_STATE_DIR", "/tmp/claude-telegram-bridge-test-state")
-    spec = importlib.util.spec_from_file_location("claude_telegram_bridge_main", bridge_path)
+    if env_updates:
+        for key, value in env_updates.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    module_name = f"claude_telegram_bridge_main_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, bridge_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     sys.modules[spec.name] = module
@@ -255,3 +263,98 @@ def test_a2a_runs_suppress_footer_in_final_response():
     assert session_id == "session-1"
     assert response.startswith("/handoff@ExampleCodexBot ")
     assert "_(" not in response
+
+
+def test_opencode_run_uses_model_and_agent_flags():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "opencode",
+            "HARNESS_LABEL": "OpenCode",
+            "HARNESS_SERVICE_NAME": "opencode-telegram-bridge",
+            "HARNESS_AGENT": "builder",
+            "BRIDGE_MODEL": "gpt-5.4-mini",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": "/tmp/opencode-telegram-bridge-test-state",
+        }
+    )
+    bridge.state["active_folder"] = "/tmp"
+    captured = {}
+
+    async def exercise():
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [
+                        b'{"type":"thread.init","sessionID":"op-123"}\n',
+                        b'{"type":"message","message":{"role":"assistant","content":"Model switched cleanly."}}\n',
+                        b'{"type":"result","result":"Model switched cleanly.","sessionID":"op-123","duration_ms":1200}\n',
+                    ]
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+                self.returncode = 0
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_claude("Summarize status.", 1, suppress_footer=True)
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert response == "Model switched cleanly."
+    assert session_id == "op-123"
+    assert captured["args"] == (
+        "opencode",
+        "run",
+        "--format",
+        "json",
+        "--dir",
+        "/tmp",
+        "-m",
+        "gpt-5.4-mini",
+        "--agent",
+        "builder",
+        "Summarize status.",
+    )
+
+
+def test_health_uses_harness_metadata():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "kilo",
+            "HARNESS_LABEL": "Kilo Code",
+            "HARNESS_SERVICE_NAME": "kilo-telegram-bridge",
+            "BRIDGE_MODEL": "kimi-k2",
+            "HARNESS_AGENT": "planner",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": "/tmp/kilo-telegram-bridge-test-state",
+        }
+    )
+
+    payload = __import__("asyncio").run(bridge.health())
+
+    assert payload["service"] == "kilo-telegram-bridge"
+    assert payload["harness_cli"] == "kilo"
+    assert payload["harness_label"] == "Kilo Code"
+    assert payload["model_override"] == "kimi-k2"
+    assert payload["agent_profile"] == "planner"
