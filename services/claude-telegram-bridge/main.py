@@ -1455,6 +1455,7 @@ async def run_claude(
     session_id: str | None = None,
     new_session: bool = False,
     suppress_progress_messages: bool = False,
+    suppress_footer: bool = False,
 ) -> tuple[str, str | None]:
     """Run Claude Code CLI with streaming. Sends progress to Telegram as events arrive.
 
@@ -1576,8 +1577,12 @@ async def run_claude(
                     chat_id,
                     new_session=True,
                     suppress_progress_messages=suppress_progress_messages,
+                    suppress_footer=suppress_footer,
                 )
             return f"(empty response)\n\nstderr: {err[:300]}", None
+
+        if suppress_footer:
+            return result_text, result_session_id
 
         folder_name = get_folder_display_name(cwd)
         footer = f"\n\n_({result_duration_ms/1000:.1f}s \u2022 {folder_name})_"
@@ -2686,6 +2691,7 @@ async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target
             text,
             chat_id,
             suppress_progress_messages=bool(a2a_reply_target),
+            suppress_footer=bool(a2a_reply_target),
         )
         elapsed = time.time() - start
 
@@ -2713,7 +2719,10 @@ async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target
                 log.warning(f"Rejected invalid A2A response to @{a2a_reply_target}: {reason}")
                 response = _a2a_response_rejection(a2a_reply_target, reason)
         log.info(f"Response ({elapsed:.1f}s, {len(response)} chars, session={session_id}{queue_note})")
-        await send_message(chat_id, response, reply_to=msg_id)
+        if a2a_reply_target:
+            await send_plain_message(chat_id, response, reply_to=msg_id)
+        else:
+            await send_message(chat_id, response, reply_to=msg_id)
 
     finally:
         _active_claude_chat_id = None

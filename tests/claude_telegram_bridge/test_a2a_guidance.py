@@ -206,3 +206,52 @@ def test_validates_structured_a2a_response_to_source_alias():
 
     assert ok is True
     assert reason == ""
+
+
+def test_a2a_runs_suppress_footer_in_final_response():
+    bridge = load_bridge_module()
+
+    async def exercise():
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [
+                        b'{"type":"system","subtype":"init","session_id":"session-1"}\n',
+                        b'{"type":"result","session_id":"session-1","duration_ms":17000,"result":"/handoff@ExampleCodexBot {\\"from\\":\\"ExampleClaudeBot\\",\\"to\\":\\"ExampleCodexBot\\",\\"task_id\\":\\"result-1\\",\\"ttl\\":0,\\"requires_response\\":false,\\"type\\":\\"result\\",\\"body\\":\\"Smoke ok\\"}","is_error":false}\n',
+                    ]
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_claude(
+            "Return strict A2A envelope only.",
+            1,
+            suppress_footer=True,
+        )
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert session_id == "session-1"
+    assert response.startswith("/handoff@ExampleCodexBot ")
+    assert "_(" not in response
