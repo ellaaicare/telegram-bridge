@@ -195,3 +195,56 @@ def test_rejects_raw_a2a_response_with_repo_skill_link():
     assert "services/telegram-a2a/agents.json" in rejection
     assert "github.com/ellaaicare/telegram-bridge" in rejection
     assert "/Users/" not in rejection
+
+
+def test_a2a_runs_suppress_footer_in_final_response():
+    bridge = load_bridge_module()
+
+    async def exercise():
+        bridge.build_codex_command = lambda *args, **kwargs: ["fake-codex"]
+
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [
+                        b'{"type":"thread.started","thread_id":"thread-1"}\n',
+                        b'{"type":"item.completed","item":{"type":"agent_message","text":"/handoff@ExampleCodexBot {\\"from\\":\\"ExampleClaudeBot\\",\\"to\\":\\"ExampleCodexBot\\",\\"task_id\\":\\"result-1\\",\\"ttl\\":0,\\"requires_response\\":false,\\"type\\":\\"result\\",\\"body\\":\\"Smoke ok\\"}"}}\n',
+                        b'{"type":"turn.completed","usage":{"output_tokens":17}}\n',
+                    ]
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_codex(
+            "Return strict A2A envelope only.",
+            1,
+            cwd="/tmp",
+            suppress_footer=True,
+        )
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert session_id == "thread-1"
+    assert response.startswith("/handoff@ExampleCodexBot ")
+    assert "_(" not in response
