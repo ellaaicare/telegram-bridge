@@ -157,6 +157,7 @@ CODEX_EXTRA_DIRS = [d for d in os.environ.get("CODEX_ADD_DIRS", "").split(":") i
 CODEX_BRIDGE_PORT = int(os.environ.get("CODEX_BRIDGE_PORT", "8110"))
 TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300"))
+A2A_PROGRESS_MODE = os.environ.get("A2A_PROGRESS_MODE", "status").strip().lower()
 A2A_IGNORED = "__a2a_ignored__"
 POLL_TIMEOUT = 60
 STATE_FILE = Path(
@@ -392,6 +393,28 @@ def _a2a_response_rejection(target_username: str, reason: str) -> str:
         "content in body.\n\n"
         f"{_a2a_skill_reference()}"
     )
+
+
+def _extract_a2a_task_id(prompt: str) -> str:
+    import re
+
+    match = re.search(r"task_id=([^,)\s]+)", prompt)
+    return match.group(1) if match else f"task-{int(time.time())}"
+
+
+def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
+    target = _canonical_handoff_target(target_username)
+    source = BOT_USERNAME or "BridgeBot"
+    payload = {
+        "from": source,
+        "to": target,
+        "task_id": f"{task_id}:status",
+        "ttl": 1,
+        "requires_response": False,
+        "type": "status",
+        "body": body,
+    }
+    return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
 
 
 def should_process_group_message(message: dict, text: str, caption: str) -> tuple[bool, str, str, str | None]:
@@ -696,6 +719,26 @@ async def send_message(chat_id: int, text: str, reply_to: int | None = None):
             await tg_api("sendMessage", data)
 
 
+async def send_plain_message(chat_id: int, text: str, reply_to: int | None = None):
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= TELEGRAM_MAX_LENGTH:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, TELEGRAM_MAX_LENGTH)
+        if split_at == -1:
+            split_at = TELEGRAM_MAX_LENGTH
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+
+    for i, chunk in enumerate(chunks):
+        data = {"chat_id": chat_id, "text": chunk}
+        if i == 0 and reply_to:
+            data["reply_to_message_id"] = reply_to
+        await tg_api("sendMessage", data)
+
+
 # --- Media Download ---
 
 
@@ -869,6 +912,8 @@ async def run_codex(
     cwd: str,
     session_id: str | None = None,
     images: list[str] | None = None,
+    suppress_progress_messages: bool = False,
+    suppress_footer: bool = False,
 ) -> tuple[str, str | None]:
     global _active_codex_proc, _watchdog_current_item, _watchdog_last_progress
 
@@ -913,7 +958,7 @@ async def run_codex(
                     }
                     _watchdog_last_progress = time.time()
                     now = time.time()
-                    if now - last_activity_update > 15:
+                    if (not suppress_progress_messages) and now - last_activity_update > 15:
                         await send_message(chat_id, f"_... {_describe_command_execution(item)}_")
                         last_activity_update = now
             elif event_type == "item.completed":
@@ -940,6 +985,9 @@ async def run_codex(
             if proc.stderr:
                 err = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
             return f"(empty response)\n\nstderr: {err[:300]}", result_session_id
+
+        if suppress_footer:
+            return latest_agent_message, result_session_id
 
         footer_parts = [get_folder_display_name(cwd)]
         if usage and usage.get("output_tokens") is not None:
@@ -1587,6 +1635,17 @@ async def _process_prompt(item: dict):
 
     try:
         start = time.time()
+        if a2a_reply_target and A2A_PROGRESS_MODE in {"status", "structured"}:
+            task_id = _extract_a2a_task_id(text)
+            await send_plain_message(
+                chat_id,
+                _a2a_status_envelope(
+                    a2a_reply_target,
+                    task_id,
+                    "Accepted. Working silently; final response will be a structured A2A result.",
+                ),
+                reply_to=msg_id,
+            )
         effective_session_id = session_id
         if effective_session_id is None and context_id:
             effective_session_id = _resolved_thread_contexts.get(context_id)
@@ -1597,6 +1656,8 @@ async def _process_prompt(item: dict):
             cwd=folder,
             session_id=effective_session_id,
             images=images,
+            suppress_progress_messages=bool(a2a_reply_target),
+            suppress_footer=bool(a2a_reply_target),
         )
         elapsed = time.time() - start
 
@@ -1632,7 +1693,10 @@ async def _process_prompt(item: dict):
             if not ok:
                 log.warning("Rejected invalid A2A response to @%s: %s", a2a_reply_target, reason)
                 response = _a2a_response_rejection(a2a_reply_target, reason)
-        await send_message(chat_id, response, reply_to=msg_id)
+        if a2a_reply_target:
+            await send_plain_message(chat_id, response, reply_to=msg_id)
+        else:
+            await send_message(chat_id, response, reply_to=msg_id)
     finally:
         _active_codex_chat_id = None
         _watchdog_current_item = None
