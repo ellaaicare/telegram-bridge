@@ -7,6 +7,8 @@ from pathlib import Path
 def load_bridge_module():
     repo_root = Path(__file__).resolve().parents[2]
     bridge_path = repo_root / "services" / "codex-telegram-bridge" / "main.py"
+    os.environ["A2A_BOT_REGISTRY_PATH"] = str(repo_root / "services" / "telegram-a2a" / "agents.json")
+    os.environ.pop("A2A_BOT_REGISTRY_JSON", None)
     os.environ.setdefault("CODEX_BRIDGE_LOG_FILE", "/tmp/codex-telegram-bridge-test.log")
     spec = importlib.util.spec_from_file_location("codex_telegram_bridge_main", bridge_path)
     module = importlib.util.module_from_spec(spec)
@@ -103,6 +105,83 @@ def test_valid_status_message_does_not_receive_guidance():
     )
 
     assert bridge.should_process_group_message(message, status, "") == (False, status, "", None)
+
+
+def test_valid_handoff_for_peer_bot_is_ignored_without_guidance():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "ExampleCodexBot"
+    bridge.BOT_ID = 1000000001
+    bridge.ALLOWED_BOT_IDS = {1000000003}
+    bridge.ALLOWED_CHAT_IDS = {-1000000000000}
+    bridge._a2a_guidance_last_sent = {}
+
+    handoff = (
+        '/handoff@ExampleCodex2Bot {"from":"ExampleClaudeBot","to":"ExampleCodex2Bot",'
+        '"task_id":"peer-task-1","ttl":1,"requires_response":true,'
+        '"type":"task","body":"Handle this on the iMac bridge."}'
+    )
+
+    result = bridge.should_process_group_message(
+        {
+            "chat": {"id": -1000000000000, "type": "supergroup"},
+            "from": {"id": 1000000003, "username": "ExampleClaudeBot", "is_bot": True},
+        },
+        handoff,
+        "",
+    )
+
+    assert result == (False, handoff, "", None)
+    assert bridge._a2a_guidance_last_sent == {}
+
+
+def test_valid_handoff_for_peer_alias_is_ignored_without_guidance():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "ExampleCodexBot"
+    bridge.BOT_ID = 1000000001
+    bridge.ALLOWED_BOT_IDS = {1000000003}
+    bridge.ALLOWED_CHAT_IDS = {-1000000000000}
+    bridge._a2a_guidance_last_sent = {}
+
+    handoff = (
+        '/handoff@iMacCodex {"from":"ExampleClaudeBot","to":"iMacCodex",'
+        '"task_id":"peer-alias-task-1","ttl":1,"requires_response":true,'
+        '"type":"task","body":"Handle this on the iMac bridge."}'
+    )
+
+    result = bridge.should_process_group_message(
+        {
+            "chat": {"id": -1000000000000, "type": "supergroup"},
+            "from": {"id": 1000000003, "username": "ExampleClaudeBot", "is_bot": True},
+        },
+        handoff,
+        "",
+    )
+
+    assert result == (False, handoff, "", None)
+    assert bridge._a2a_guidance_last_sent == {}
+
+
+def test_malformed_handoff_for_peer_bot_is_ignored_without_guidance():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "ExampleCodexBot"
+    bridge.BOT_ID = 1000000001
+    bridge.ALLOWED_BOT_IDS = {1000000003}
+    bridge.ALLOWED_CHAT_IDS = {-1000000000000}
+    bridge._a2a_guidance_last_sent = {}
+
+    handoff = '/handoff@ExampleCodex2Bot {"from":"ExampleClaudeBot"'
+
+    result = bridge.should_process_group_message(
+        {
+            "chat": {"id": -1000000000000, "type": "supergroup"},
+            "from": {"id": 1000000003, "username": "ExampleClaudeBot", "is_bot": True},
+        },
+        handoff,
+        "",
+    )
+
+    assert result == (False, handoff, "", None)
+    assert bridge._a2a_guidance_last_sent == {}
 
 
 def test_repo_registry_trusts_known_peer_bots_by_default():

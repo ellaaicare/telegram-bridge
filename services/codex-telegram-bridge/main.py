@@ -291,6 +291,29 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
     return True, prompt
 
 
+def _handoff_command_target(raw: str) -> str:
+    stripped = raw.strip()
+    if not stripped.lower().startswith("/handoff@"):
+        return ""
+    command = stripped.split(maxsplit=1)[0]
+    return command[len("/handoff@"):].strip()
+
+
+def _handoff_target_matches(target: str, target_username: str) -> bool:
+    if not target or not target_username:
+        return False
+    target_key = _norm_bot_key(target)
+    return target_key in {
+        _norm_bot_key(prefix[len("/handoff@"):])
+        for prefix in _handoff_prefixes_for_target(target_username)
+    }
+
+
+def _is_handoff_for_other_bot(raw: str) -> bool:
+    target = _handoff_command_target(raw)
+    return bool(target and not _handoff_target_matches(target, BOT_USERNAME))
+
+
 def _a2a_skill_reference() -> str:
     return (
         "Repo skill: skills/telegram-a2a-handoff/SKILL.md\n"
@@ -457,6 +480,9 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
                 return False, text, caption, None
             ok, prompt = _parse_handoff(raw)
             if not ok and prompt == A2A_IGNORED:
+                return False, text, caption, None
+            if not ok and raw and _is_handoff_for_other_bot(raw):
+                log.info("Ignored A2A handoff for another bot from sender %s (%s)", user_id, username)
                 return False, text, caption, None
             if not ok and raw and _is_a2a_guidance(raw):
                 log.info("Ignored peer A2A syntax guidance from bot sender %s (%s)", user_id, username)
