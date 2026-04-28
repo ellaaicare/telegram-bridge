@@ -133,8 +133,8 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 # --- Configuration ---
 
-BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.2.0")
-BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-quiet-status-pr685.7681cf5")
+BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.3.0")
+BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-autowrap-silent-ignore")
 BOT_TOKEN = os.environ.get("CODEX_TELEGRAM_BOT_TOKEN", "")
 A2A_BOT_REGISTRY = _load_a2a_registry()
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
@@ -402,6 +402,63 @@ def _extract_a2a_task_id(prompt: str) -> str:
     return match.group(1) if match else f"task-{int(time.time())}"
 
 
+def _a2a_result_envelope(target_username: str, task_id: str, body: str) -> str:
+    """Wrap a raw agent response as a valid /handoff@Target result envelope."""
+    target = _canonical_handoff_target(target_username)
+    source = BOT_USERNAME or "BridgeBot"
+    payload = {
+        "from": source,
+        "to": target,
+        "task_id": task_id,
+        "ttl": 0,
+        "requires_response": False,
+        "type": "result",
+        "body": body,
+    }
+    return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
+
+
+def _is_valid_handoff_to_other_bot(raw: str) -> bool:
+    """Check if raw is a valid /handoff@SomeBot JSON envelope addressed to a
+    different bot (not this one). Used to silently ignore handoffs that are
+    not meant for this bridge."""
+    raw_stripped = raw.strip()
+    if not raw_stripped.lower().startswith("/handoff@"):
+        return False
+    # Find the space after /handoff@SomeBot
+    space_idx = raw_stripped.find(" ")
+    if space_idx < 0:
+        return False
+    target_part = raw_stripped[len("/handoff@"):space_idx]
+    # Check if target is this bot — if so, _parse_handoff would have matched
+    target_norm = _norm_bot_key(target_part)
+    my_norm = _norm_bot_key(BOT_USERNAME or "")
+    if target_norm and my_norm and target_norm == my_norm:
+        return False
+    # Check if target resolves to this bot via registry aliases
+    resolved = _resolve_bot_alias(target_part)
+    if resolved:
+        resolved_username = str(resolved.get("username") or "")
+        if _norm_bot_key(resolved_username) == my_norm:
+            return False
+    # Try to parse the JSON payload to confirm it's a valid handoff
+    json_text = raw_stripped[space_idx + 1:].strip()
+    if not json_text:
+        return False
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    # Must have at least task_id and body to be considered valid
+    if not str(payload.get("task_id") or "").strip():
+        return False
+    if not str(payload.get("body") or "").strip():
+        return False
+    return True
+
+
 def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
     target = _canonical_handoff_target(target_username)
     source = BOT_USERNAME or "BridgeBot"
@@ -457,6 +514,9 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
                 return False, text, caption, None
             ok, prompt = _parse_handoff(raw)
             if not ok and prompt == A2A_IGNORED:
+                return False, text, caption, None
+            if not ok and _is_valid_handoff_to_other_bot(raw):
+                log.info("Ignored valid A2A handoff addressed to another bot from %s (%s)", user_id, username)
                 return False, text, caption, None
             if not ok and raw and _is_a2a_guidance(raw):
                 log.info("Ignored peer A2A syntax guidance from bot sender %s (%s)", user_id, username)
@@ -1691,8 +1751,9 @@ async def _process_prompt(item: dict):
         if a2a_reply_target:
             ok, reason = _validate_handoff_envelope(response, a2a_reply_target)
             if not ok:
-                log.warning("Rejected invalid A2A response to @%s: %s", a2a_reply_target, reason)
-                response = _a2a_response_rejection(a2a_reply_target, reason)
+                task_id = _extract_a2a_task_id(text)
+                log.info("Auto-wrapping A2A response to @%s (reason: %s)", a2a_reply_target, reason)
+                response = _a2a_result_envelope(a2a_reply_target, task_id, response)
         if a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
         else:

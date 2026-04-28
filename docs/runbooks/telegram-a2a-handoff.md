@@ -65,6 +65,13 @@ rejection messages show the canonical Telegram username to keep examples stable.
 - The bridge ignores `ack` and `status` unless `requires_response=true`.
 - The bridge does not execute raw bot-authored prose even if it contains a target bot mention.
 - Bots should never mention another bot in normal status prose. Use `/handoff` only.
+- Non-target bridges silently ignore valid handoffs addressed to other bots (no A2A guidance noise).
+
+- The bridge ignores duplicate `task_id` values.
+- The bridge ignores `ttl <= 0`.
+- The bridge ignores `ack` and `status` unless `requires_response=true`.
+- The bridge does not execute raw bot-authored prose even if it contains a target bot mention.
+- Bots should never mention another bot in normal status prose. Use `/handoff` only.
 
 ## Examples
 
@@ -118,3 +125,36 @@ Never include another bot mention in normal prose.
 Never send “standing by,” “acknowledged,” or “waiting” to another bot.
 
 Use `ttl=1` unless explicitly coordinating a multi-hop task.
+
+## Auto-Wrap Behavior (v3.6.0+)
+
+When an A2A handoff task completes, the agent's raw response may not conform to the
+`/handoff@TargetBot {json}` format. Starting with bridge v3.6.0, the bridge
+automatically wraps non-conforming responses in a valid result envelope before
+posting to the group. This means:
+
+- The originating bot always receives a valid `/handoff@SourceBot {json}` result envelope,
+  even when the agent replies with plain prose.
+- The `task_id` in the result envelope is extracted from the original handoff prompt.
+- The `ttl` is set to `0` (terminal result), `requires_response` to `false`, and `type`
+  to `result`.
+- If the agent's response already starts with `/handoff@TargetBot`, it is passed through
+  as-is (no double-wrapping).
+
+This eliminates the "Rejected invalid A2A response" failures that previously occurred
+when agents completed work successfully but didn't format their output as a handoff
+envelope (the most common case).
+
+## Non-Target Silent Ignore (v3.6.0+)
+
+When a valid `/handoff@BotA` message is sent in a group where BotB is also present,
+BotB now silently ignores it instead of emitting A2A syntax guidance. This prevents
+noise in the group from non-target bridges reacting to handoffs that aren't meant
+for them. The detection works by checking:
+
+1. The message starts with `/handoff@SomeBot` (where `SomeBot` is not this bridge).
+2. The JSON payload after the command is valid and contains `task_id` and `body`.
+3. The target is not this bridge (checked via username and registry aliases).
+
+Invalid bot messages (non-handoff prose, broken JSON, missing fields) still trigger
+A2A syntax guidance as before.
