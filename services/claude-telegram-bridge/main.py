@@ -174,6 +174,13 @@ TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300"))
 A2A_PROGRESS_MODE = os.environ.get("A2A_PROGRESS_MODE", "status").strip().lower()
 A2A_IGNORED = "__a2a_ignored__"
+CANONICAL_EVENT_SINK_ENABLED = _truthy_env("CANONICAL_EVENT_SINK_ENABLED", "true")
+CANONICAL_EVENT_ENDPOINT = os.environ.get(
+    "CANONICAL_EVENT_ENDPOINT",
+    "https://api.ella-ai-care.com/v1/ella/events",
+)
+TELEGRAM_CANONICAL_UID = os.environ.get("TELEGRAM_CANONICAL_UID", "").strip()
+TELEGRAM_CANONICAL_IDENTITY = os.environ.get("TELEGRAM_CANONICAL_IDENTITY", "").strip()
 POLL_TIMEOUT = 60
 STATE_FILE = Path(
     os.environ.get(
@@ -1234,6 +1241,146 @@ async def tg_api(method: str, data: dict | None = None) -> dict | None:
         return None
 
 
+def _message_datetime(message: dict | None = None) -> str:
+    timestamp = (message or {}).get("date")
+    if timestamp:
+        return datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _canonical_uid(chat_id: int | None, from_id: int | None = None) -> str:
+    if TELEGRAM_CANONICAL_UID:
+        return TELEGRAM_CANONICAL_UID
+    if from_id is not None:
+        return f"telegram:{from_id}"
+    return f"telegram-chat:{chat_id}"
+
+
+def _canonical_identity(uid: str) -> str:
+    return TELEGRAM_CANONICAL_IDENTITY or uid
+
+
+def _telegram_source_identity(chat_id: int | None, message_id: int | None, from_id: int | None) -> str:
+    return f"telegram:{chat_id or 'unknown-chat'}:{message_id or 'unknown-message'}:{from_id or 'unknown-sender'}"
+
+
+def _canonical_event_id(
+    *,
+    direction: str,
+    update_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+    from_id: int | None,
+    chunk_index: int = 0,
+) -> str:
+    update_part = update_id if update_id is not None else "sent"
+    return f"telegram:{direction}:{update_part}:{chat_id}:{message_id}:{from_id}:{chunk_index}"
+
+
+def _telegram_event_payload(
+    *,
+    direction: str,
+    text: str,
+    chat_id: int | None,
+    message_id: int | None,
+    from_id: int | None,
+    update_id: int | None = None,
+    message: dict | None = None,
+    chunk_index: int = 0,
+    metadata: dict | None = None,
+) -> dict:
+    uid = _canonical_uid(chat_id, from_id)
+    source_identity = _telegram_source_identity(chat_id, message_id, from_id)
+    role = "user" if direction == "inbound_human" else "assistant"
+    return {
+        "uid": uid,
+        "canonical_identity": _canonical_identity(uid),
+        "event_id": _canonical_event_id(
+            direction=direction,
+            update_id=update_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            from_id=from_id,
+            chunk_index=chunk_index,
+        ),
+        "session_id": f"telegram:{chat_id}" if chat_id is not None else None,
+        "channel": "telegram",
+        "provider": "telegram-bridge",
+        "role": role,
+        "text": text or "",
+        "started_at": _message_datetime(message),
+        "ended_at": _message_datetime(message),
+        "privacy_scope": "user_private",
+        "scan_policy": "immediate" if role == "user" else "none",
+        "source_ref": {
+            "source_identity": source_identity,
+            "update_id": update_id,
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "from_id": from_id,
+            "direction": direction,
+            "bridge": "claude-telegram-bridge",
+        },
+        "metadata": metadata or {},
+    }
+
+
+async def post_canonical_event(event: dict):
+    if not CANONICAL_EVENT_SINK_ENABLED:
+        return
+    try:
+        client = await get_client()
+        response = await client.post(CANONICAL_EVENT_ENDPOINT, json={"events": [event]}, timeout=10.0)
+        if response.status_code >= 300:
+            log.warning("Canonical event sink failed: status=%s body=%s", response.status_code, response.text[:200])
+    except Exception as e:
+        log.warning("Canonical event sink error: %s", e)
+
+
+def emit_inbound_canonical_event(update: dict, message: dict, raw_text: str):
+    if not raw_text:
+        return
+    from_user = message.get("from") or {}
+    if from_user.get("is_bot"):
+        return
+    chat_id = (message.get("chat") or {}).get("id")
+    event = _telegram_event_payload(
+        direction="inbound_human",
+        text=raw_text,
+        chat_id=chat_id,
+        message_id=message.get("message_id"),
+        from_id=from_user.get("id"),
+        update_id=update.get("update_id"),
+        message=message,
+        metadata={
+            "from_username": from_user.get("username"),
+            "chat_type": (message.get("chat") or {}).get("type"),
+        },
+    )
+    asyncio.create_task(post_canonical_event(event))
+
+
+def emit_outbound_canonical_event(result: dict | None, text: str, chunk_index: int = 0):
+    if not result or not result.get("ok"):
+        return
+    sent = result.get("result") or {}
+    chat_id = (sent.get("chat") or {}).get("id")
+    event = _telegram_event_payload(
+        direction="outbound_bot",
+        text=text,
+        chat_id=chat_id,
+        message_id=sent.get("message_id"),
+        from_id=BOT_ID,
+        message=sent,
+        chunk_index=chunk_index,
+        metadata={
+            "bot_username": BOT_USERNAME,
+            "reply_to_message_id": (sent.get("reply_to_message") or {}).get("message_id"),
+        },
+    )
+    asyncio.create_task(post_canonical_event(event))
+
+
 async def send_typing(chat_id: int):
     await tg_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
 
@@ -1316,7 +1463,8 @@ async def send_message(chat_id: int, text: str, reply_to: int | None = None):
             log.info(f"Markdown send failed, retrying as plain text ({len(chunk)} chars)")
             data["text"] = chunk
             data.pop("parse_mode", None)
-            await tg_api("sendMessage", data)
+            result = await tg_api("sendMessage", data)
+        emit_outbound_canonical_event(result, chunk, chunk_index=i)
 
 
 async def send_plain_message(chat_id: int, text: str, reply_to: int | None = None):
@@ -1324,7 +1472,9 @@ async def send_plain_message(chat_id: int, text: str, reply_to: int | None = Non
     data = {"chat_id": chat_id, "text": text}
     if reply_to:
         data["reply_to_message_id"] = reply_to
-    return await tg_api("sendMessage", data)
+    result = await tg_api("sendMessage", data)
+    emit_outbound_canonical_event(result, text)
+    return result
 
 
 # --- Media Download ---
@@ -2818,6 +2968,7 @@ async def poll_loop():
 
                 if not text and not caption and not has_media:
                     continue
+                emit_inbound_canonical_event(update, message, raw_text or text or caption or "[media]")
 
                 log.info(f"Message from {user_id}: {(text or caption or '[media]')[:80]}")
 
