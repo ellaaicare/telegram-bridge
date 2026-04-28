@@ -7,6 +7,7 @@ from pathlib import Path
 def load_bridge_module():
     repo_root = Path(__file__).resolve().parents[2]
     bridge_path = repo_root / "services" / "claude-telegram-bridge" / "main.py"
+    os.environ["A2A_BOT_REGISTRY_PATH"] = str(repo_root / "services" / "telegram-a2a" / "agents.json")
     os.environ.setdefault("BRIDGE_STATE_DIR", "/tmp/claude-telegram-bridge-test-state")
     spec = importlib.util.spec_from_file_location("claude_telegram_bridge_main", bridge_path)
     module = importlib.util.module_from_spec(spec)
