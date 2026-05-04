@@ -173,7 +173,7 @@ def _trusted_registry_bot_ids() -> set[int]:
 # --- Configuration ---
 
 BRIDGE_VERSION = os.environ.get("BRIDGE_VERSION", "3.5.0")
-BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "a2a-quiet-status-pr685.7681cf5")
+BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "a2a-noise-harden-pr6.9c8bcef")
 HARNESS_CLI = os.environ.get("HARNESS_CLI", "claude").strip().lower() or "claude"
 HARNESS_LABEL = os.environ.get("HARNESS_LABEL", "").strip() or {
     "claude": "Claude Code",
@@ -306,7 +306,8 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
         "",
     )
     if not matched_prefix:
-        return False, ""
+        # Not a handoff targeted at us — silently ignore
+        return False, A2A_IGNORED
 
     payload_text = raw_stripped[len(matched_prefix) :].strip()
     if not payload_text:
@@ -388,6 +389,7 @@ def _should_send_a2a_guidance(chat_id: int | None, user_id: int | None) -> bool:
 
 
 def _is_a2a_guidance(raw: str) -> bool:
+    # Catch both guidance variants: initial guidance and response-rejection guidance.
     return raw.lstrip().startswith("A2A handoff syntax required for bot-to-bot work.")
 
 
@@ -536,15 +538,10 @@ def should_process_group_message(
                 )
                 return False, text, caption, None
             if not ok and raw:
-                if _should_send_a2a_guidance(chat_id, user_id):
-                    log.info(
-                        "Sending A2A syntax guidance to bot sender %s (%s)",
-                        user_id,
-                        username,
-                    )
-                    return False, text, caption, _a2a_guidance_message()
+                # Bot-originated raw messages should never trigger guidance spam in group chats.
+                # Log internally only; do not send A2A syntax guidance to bots.
                 log.info(
-                    "Suppressed repeated A2A syntax guidance to bot sender %s (%s)",
+                    "Silently ignoring bot-originated raw message from %s (%s)",
                     user_id,
                     username,
                 )
