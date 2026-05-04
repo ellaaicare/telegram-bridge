@@ -140,7 +140,9 @@ def _resolve_bot_alias(value: str) -> dict | None:
 def _handoff_prefixes_for_target(target_username: str) -> list[str]:
     bot = _resolve_bot_alias(target_username)
     values = _bot_alias_values(bot) if bot else {target_username}
-    prefixes = [f"/handoff@{value}" for value in sorted(values, key=len, reverse=True) if value]
+    prefixes = [
+        f"/handoff@{value}" for value in sorted(values, key=len, reverse=True) if value
+    ]
     return prefixes or [f"/handoff@{target_username}"]
 
 
@@ -214,7 +216,7 @@ ALLOWED_CHAT_IDS = _parse_int_set(os.environ.get("ALLOWED_CHAT_IDS", ""))
 BOT_USERNAME = ""
 BOT_ID: int | None = None
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
-BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "glm-5.1:cloud")
+BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "").strip()
 TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(
     os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300")
@@ -1713,8 +1715,16 @@ async def run_harness(
             ]
         )
         if BRIDGE_MODEL:
-            proc_env["BRIDGE_MODEL"] = BRIDGE_MODEL
-            proc_env["ANTHROPIC_MODEL"] = BRIDGE_MODEL
+            # Only set ANTHROPIC_MODEL if the model is an Anthropic-compatible name.
+            # Ollama/openrouter models break the real Claude CLI when injected as env.
+            if BRIDGE_MODEL.startswith("claude-") or BRIDGE_MODEL.startswith(
+                "anthropic-"
+            ):
+                proc_env["BRIDGE_MODEL"] = BRIDGE_MODEL
+                proc_env["ANTHROPIC_MODEL"] = BRIDGE_MODEL
+            else:
+                # Pass non-Anthropic models via --model flag (supported by Claude CLI)
+                cmd.extend(["--model", BRIDGE_MODEL])
     elif HARNESS_CLI in {"opencode", "kilo"}:
         cmd = [HARNESS_CLI, "run", "--format", "json", "--dir", cwd]
         if sid:
