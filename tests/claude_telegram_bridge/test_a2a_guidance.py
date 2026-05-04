@@ -24,7 +24,7 @@ def load_bridge_module(env_updates=None):
     return module
 
 
-def test_allowed_bot_bad_syntax_receives_guidance():
+def test_allowed_bot_raw_chatter_is_silently_ignored():
     bridge = load_bridge_module()
     bridge.BOT_USERNAME = "ExampleClaudeBot"
     bridge.BOT_ID = 1000000003
@@ -43,22 +43,18 @@ def test_allowed_bot_bad_syntax_receives_guidance():
     assert should_process is False
     assert text == "MacMiniCodex standing by"
     assert caption == ""
-    assert auto_reply is not None
-    assert auto_reply.startswith("A2A handoff syntax required for bot-to-bot work.")
-    assert "skills/telegram-a2a-handoff/SKILL.md" in auto_reply
-    assert "github.com/ellaaicare/telegram-bridge" in auto_reply
-    assert "/Users/" not in auto_reply
+    assert auto_reply is None
 
 
 def test_bridge_version_metadata_is_exposed():
     bridge = load_bridge_module()
 
     assert bridge.BRIDGE_VERSION == "3.5.0"
-    assert bridge.BRIDGE_BUILD == "a2a-quiet-status-pr685.7681cf5"
+    assert bridge.BRIDGE_BUILD == "a2a-noise-harden-pr6.9c8bcef"
     assert bridge.app.version == bridge.BRIDGE_VERSION
 
 
-def test_repeated_bad_bot_syntax_guidance_is_rate_limited():
+def test_repeated_bad_bot_syntax_is_silently_ignored():
     bridge = load_bridge_module()
     bridge.BOT_USERNAME = "ExampleClaudeBot"
     bridge.BOT_ID = 1000000003
@@ -74,7 +70,7 @@ def test_repeated_bad_bot_syntax_guidance_is_rate_limited():
     first = bridge.should_process_group_message(message, "Using TodoWrite", "")
     second = bridge.should_process_group_message(message, "Reading page.dart", "")
 
-    assert first[3] is not None
+    assert first == (False, "Using TodoWrite", "", None)
     assert second == (False, "Reading page.dart", "", None)
 
 
