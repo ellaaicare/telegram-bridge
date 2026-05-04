@@ -12,6 +12,6 @@ if [ -f .env ]; then
   set +a
 fi
 
-PORT="${BRIDGE_PORT:-8100}"
+PORT="${BRIDGE_PORT:-8130}"
 
 exec "${VENV_DIR}/bin/uvicorn" main:app --host 0.0.0.0 --port "$PORT"

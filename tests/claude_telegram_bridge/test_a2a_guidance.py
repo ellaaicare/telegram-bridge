@@ -97,7 +97,9 @@ def test_a2a_status_envelope_uses_repo_alias_target():
     bridge = load_bridge_module()
     bridge.BOT_USERNAME = "ExampleClaudeBot"
 
-    envelope = bridge._a2a_status_envelope("MacMiniCodex", "task-1", "Working silently.")
+    envelope = bridge._a2a_status_envelope(
+        "MacMiniCodex", "task-1", "Working silently."
+    )
 
     assert envelope.startswith("/handoff@ExampleCodexBot ")
     assert '"type":"status"' in envelope
@@ -121,7 +123,12 @@ def test_valid_status_message_does_not_receive_guidance():
         '"type":"status","body":"Accepted and working silently."}'
     )
 
-    assert bridge.should_process_group_message(message, status, "") == (False, status, "", None)
+    assert bridge.should_process_group_message(message, status, "") == (
+        False,
+        status,
+        "",
+        None,
+    )
 
 
 def test_repo_registry_trusts_known_peer_bots_by_default():
@@ -175,7 +182,9 @@ def test_peer_guidance_does_not_trigger_guidance_loop():
 def test_rejects_raw_a2a_response_with_repo_skill_link():
     bridge = load_bridge_module()
 
-    ok, reason = bridge._validate_handoff_envelope("Audit #673 first.", "ExampleCodexBot")
+    ok, reason = bridge._validate_handoff_envelope(
+        "Audit #673 first.", "ExampleCodexBot"
+    )
     rejection = bridge._a2a_response_rejection("ExampleCodexBot", reason)
 
     assert ok is False
@@ -252,7 +261,7 @@ def test_a2a_runs_suppress_footer_in_final_response():
             return FakeProc()
 
         bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
-        return await bridge.run_claude(
+        return await bridge.run_harness(
             "Return strict A2A envelope only.",
             1,
             suppress_footer=True,
@@ -317,7 +326,7 @@ def test_opencode_run_uses_model_and_agent_flags():
             return FakeProc()
 
         bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
-        return await bridge.run_claude("Summarize status.", 1, suppress_footer=True)
+        return await bridge.run_harness("Summarize status.", 1, suppress_footer=True)
 
     response, session_id = __import__("asyncio").run(exercise())
 
@@ -335,6 +344,79 @@ def test_opencode_run_uses_model_and_agent_flags():
         "--agent",
         "builder",
         "Summarize status.",
+    )
+
+
+def test_kilo_run_uses_model_and_agent_flags():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "kilo",
+            "HARNESS_LABEL": "Kilo Code",
+            "HARNESS_SERVICE_NAME": "kilo-telegram-bridge",
+            "HARNESS_AGENT": "planner",
+            "BRIDGE_MODEL": "kimi-k2.6:cloud",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": "/tmp/kilo-telegram-bridge-test-state",
+        }
+    )
+    bridge.state["active_folder"] = "/tmp"
+    captured = {}
+
+    async def exercise():
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [
+                        b'{"type":"thread.init","sessionID":"ki-456"}\n',
+                        b'{"type":"message","message":{"role":"assistant","content":"Kilo session ready."}}\n',
+                        b'{"type":"result","result":"Kilo session ready.","sessionID":"ki-456","duration_ms":800}\n',
+                    ]
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+                self.returncode = 0
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_harness("Check kilo status.", 1, suppress_footer=True)
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert response == "Kilo session ready."
+    assert session_id == "ki-456"
+    assert captured["args"] == (
+        "kilo",
+        "run",
+        "--format",
+        "json",
+        "--dir",
+        "/tmp",
+        "-m",
+        "kimi-k2.6:cloud",
+        "--agent",
+        "planner",
+        "Check kilo status.",
     )
 
 
