@@ -440,3 +440,87 @@ def test_health_uses_harness_metadata():
     assert payload["harness_label"] == "Kilo Code"
     assert payload["model_override"] == "kimi-k2"
     assert payload["agent_profile"] == "planner"
+
+
+def test_parse_handoff_returns_ignored_for_non_target():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "imackilocode_bot"
+    ok, prompt = bridge._parse_handoff(
+        '/handoff@EllaCodexBot {"from":"EllaCodexBot","to":"EllaCodexBot","task_id":"x","ttl":1,"requires_response":true,"type":"task","body":"Do work."}'
+    )
+    assert ok is False
+    assert prompt == bridge.A2A_IGNORED
+
+
+def test_parse_handoff_processes_targeted_handoff():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "imackilocode_bot"
+    ok, prompt = bridge._parse_handoff(
+        '/handoff@imackilocode_bot {"from":"EllaCodexBot","to":"imackilocode_bot","task_id":"t-123","ttl":1,"requires_response":true,"type":"task","body":"Fix A2A noise."}'
+    )
+    assert ok is True
+    assert "task_id=t-123" in prompt
+    assert "Fix A2A noise." in prompt
+
+
+def test_group_message_ignores_non_target_bot_handoff():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "kilo",
+            "HARNESS_LABEL": "Kilo Code",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "ALLOWED_BOT_IDS": "8217119702",
+        }
+    )
+    bridge.BOT_USERNAME = "imackilocode_bot"
+    bridge.BOT_ID = 8763402136
+
+    msg = {
+        "chat": {"id": -1003765875927, "type": "supergroup"},
+        "from": {"id": 8217119702, "is_bot": True, "username": "EllaCodexBot"},
+        "text": '/handoff@EllaCodexBot {"from":"EllaCodexBot","to":"EllaCodexBot","task_id":"x","ttl":1,"requires_response":true,"type":"task","body":"Do work."}',
+    }
+    ok, text, caption, reply = bridge.should_process_group_message(msg, msg["text"], "")
+    assert ok is False
+    assert reply is None  # silently ignored, no guidance spam
+
+
+def test_group_message_silently_ignores_bot_raw_text():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "kilo",
+            "HARNESS_LABEL": "Kilo Code",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "ALLOWED_BOT_IDS": "8217119702",
+        }
+    )
+    bridge.BOT_USERNAME = "imackilocode_bot"
+    bridge.BOT_ID = 8763402136
+
+    msg = {
+        "chat": {"id": -1003765875927, "type": "supergroup"},
+        "from": {"id": 8217119702, "is_bot": True, "username": "EllaCodexBot"},
+        "text": "Standing by for next dispatch.",
+    }
+    ok, text, caption, reply = bridge.should_process_group_message(msg, msg["text"], "")
+    assert ok is False
+    assert reply is None  # no guidance spam to bots
+
+
+def test_is_a2a_guidance_detects_rejection_message():
+    bridge = load_bridge_module()
+    rejection = bridge._a2a_response_rejection("TargetBot", "missing body")
+    assert bridge._is_a2a_guidance(rejection) is True
+
+
+def test_task_id_deduplication_rejects_duplicate():
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "imackilocode_bot"
+
+    handoff = '/handoff@imackilocode_bot {"from":"EllaCodexBot","to":"imackilocode_bot","task_id":"dup-001","ttl":1,"requires_response":true,"type":"task","body":"First."}'
+    ok1, _ = bridge._parse_handoff(handoff)
+    assert ok1 is True
+
+    ok2, prompt2 = bridge._parse_handoff(handoff)
+    assert ok2 is False
+    assert prompt2 == bridge.A2A_IGNORED
