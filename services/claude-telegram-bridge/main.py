@@ -3506,7 +3506,7 @@ async def startup():
                     if name not in state["folders"]:
                         state["folders"][name] = str(d)
     # Check for orphaned harness processes from a previous crash
-    asyncio.create_task(recover_orphaned_claude())
+    asyncio.create_task(recover_orphaned_harness())
 
     save_state()
 
@@ -3536,7 +3536,9 @@ async def shutdown():
             await asyncio.wait_for(_active_harness_proc.wait(), timeout=CLAUDE_TIMEOUT)
             log.info(f"{HARNESS_LABEL} process finished before shutdown")
         except asyncio.TimeoutError:
-            log.warning(f"{HARNESS_LABEL} still running at shutdown timeout, terminating")
+            log.warning(
+                f"{HARNESS_LABEL} still running at shutdown timeout, terminating"
+            )
             _active_harness_proc.terminate()
 
     save_state()
