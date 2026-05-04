@@ -3244,7 +3244,14 @@ async def _process_prompt(
                 log.warning(
                     f"Rejected invalid A2A response to @{a2a_reply_target}: {reason}"
                 )
-                response = _a2a_response_rejection(a2a_reply_target, reason)
+                # Silently drop invalid A2A responses instead of sending
+                # full rejection guidance to group chat (avoids guidance cascades).
+                await send_message(
+                    chat_id,
+                    f"_A2A response invalid: {reason[:60]}..._",
+                    reply_to=msg_id,
+                )
+                return
         log.info(
             f"Response ({elapsed:.1f}s, {len(response)} chars, session={session_id}{queue_note})"
         )
