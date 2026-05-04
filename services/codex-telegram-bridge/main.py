@@ -85,7 +85,7 @@ def _registry_bots() -> list[dict]:
 def _bot_alias_values(bot: dict) -> set[str]:
     values = {str(bot.get("canonical") or ""), str(bot.get("username") or "")}
     values.update(str(alias) for alias in bot.get("aliases", []) if alias)
-    return {value for value in values if value}
+    return {value.lstrip("@") for value in values if value}
 
 
 def _resolve_bot_alias(value: str) -> dict | None:
@@ -101,7 +101,7 @@ def _resolve_bot_alias(value: str) -> dict | None:
 def _handoff_prefixes_for_target(target_username: str) -> list[str]:
     bot = _resolve_bot_alias(target_username)
     values = _bot_alias_values(bot) if bot else {target_username}
-    prefixes = [f"/handoff@{value}" for value in sorted(values) if value]
+    prefixes = [f"/handoff@{value}" for value in sorted(values, key=len, reverse=True) if value]
     return prefixes or [f"/handoff@{target_username}"]
 
 
@@ -134,7 +134,7 @@ def _trusted_registry_bot_ids() -> set[int]:
 # --- Configuration ---
 
 BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.2.0")
-BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-quiet-status-pr685.7681cf5")
+BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-noise-harden-pr6.9c8bcef")
 BOT_TOKEN = os.environ.get("CODEX_TELEGRAM_BOT_TOKEN", "")
 A2A_BOT_REGISTRY = _load_a2a_registry()
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
@@ -149,6 +149,7 @@ BOT_USERNAME = ""
 BOT_ID: int | None = None
 CODEX_TIMEOUT = int(os.environ.get("CODEX_TIMEOUT", "900"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
+CODEX_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "high").strip()
 CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
 CODEX_SKIP_GIT_REPO_CHECK = os.environ.get("CODEX_SKIP_GIT_REPO_CHECK", "true").lower() == "true"
 CODEX_FULL_AUTO = os.environ.get("CODEX_FULL_AUTO", "false").lower() == "true"
@@ -243,7 +244,8 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
         "",
     )
     if not matched_prefix:
-        return False, ""
+        # Not a handoff targeted at us: silently ignore.
+        return False, A2A_IGNORED
 
     payload_text = raw_stripped[len(matched_prefix):].strip()
     if not payload_text:
@@ -462,10 +464,9 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
                 log.info("Ignored peer A2A syntax guidance from bot sender %s (%s)", user_id, username)
                 return False, text, caption, None
             if not ok and raw:
-                if _should_send_a2a_guidance(chat_id, user_id):
-                    log.info("Sending A2A syntax guidance to bot sender %s (%s)", user_id, username)
-                    return False, text, caption, _a2a_guidance_message()
-                log.info("Suppressed repeated A2A syntax guidance to bot sender %s (%s)", user_id, username)
+                # Bot-originated raw messages should never trigger guidance spam in group chats.
+                # Log internally only; do not send A2A syntax guidance to bots.
+                log.info("Silently ignoring bot-originated raw message from %s (%s)", user_id, username)
                 return False, text, caption, None
             return (ok, prompt if text else text, prompt if caption else caption, None)
 
@@ -870,6 +871,8 @@ def build_codex_command(
             cmd.append("--skip-git-repo-check")
         if CODEX_MODEL:
             cmd.extend(["-m", CODEX_MODEL])
+        if CODEX_REASONING_EFFORT:
+            cmd.extend(["-c", f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"'])
         if CODEX_FULL_AUTO:
             cmd.append("--full-auto")
         # `codex exec resume` on the current CLI does not expose `-s/--sandbox`.
@@ -887,6 +890,8 @@ def build_codex_command(
         cmd.append("--skip-git-repo-check")
     if CODEX_MODEL:
         cmd.extend(["-m", CODEX_MODEL])
+    if CODEX_REASONING_EFFORT:
+        cmd.extend(["-c", f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"'])
     if CODEX_FULL_AUTO:
         cmd.append("--full-auto")
     if CODEX_DANGEROUS_BYPASS:
@@ -1877,6 +1882,8 @@ async def health():
         "folder_count": len(state.get("folders", {})),
         "default_session": sid[:8] if sid else None,
         "session_count": len(state.get("sessions", {})),
+        "codex_model": CODEX_MODEL or "default",
+        "codex_reasoning_effort": CODEX_REASONING_EFFORT or "default",
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

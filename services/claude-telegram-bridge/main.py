@@ -124,7 +124,7 @@ def _registry_bots() -> list[dict]:
 def _bot_alias_values(bot: dict) -> set[str]:
     values = {str(bot.get("canonical") or ""), str(bot.get("username") or "")}
     values.update(str(alias) for alias in bot.get("aliases", []) if alias)
-    return {value for value in values if value}
+    return {value.lstrip("@") for value in values if value}
 
 
 def _resolve_bot_alias(value: str) -> dict | None:
@@ -140,7 +140,7 @@ def _resolve_bot_alias(value: str) -> dict | None:
 def _handoff_prefixes_for_target(target_username: str) -> list[str]:
     bot = _resolve_bot_alias(target_username)
     values = _bot_alias_values(bot) if bot else {target_username}
-    prefixes = [f"/handoff@{value}" for value in sorted(values) if value]
+    prefixes = [f"/handoff@{value}" for value in sorted(values, key=len, reverse=True) if value]
     return prefixes or [f"/handoff@{target_username}"]
 
 
