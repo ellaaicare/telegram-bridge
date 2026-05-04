@@ -69,9 +69,23 @@ def _a2a_registry_candidates() -> list[Path]:
         [
             here.parents[1] / "telegram-a2a" / "agents.json",
             here.parents[2] / "services" / "telegram-a2a" / "agents.json",
-            Path.home() / "telegram-bridge" / "services" / "telegram-a2a" / "agents.json",
-            Path.home() / "dev" / "telegram-bridge" / "services" / "telegram-a2a" / "agents.json",
-            Path.home() / "dev" / "ella-ai" / "services" / "telegram-a2a" / "agents.json",
+            Path.home()
+            / "telegram-bridge"
+            / "services"
+            / "telegram-a2a"
+            / "agents.json",
+            Path.home()
+            / "dev"
+            / "telegram-bridge"
+            / "services"
+            / "telegram-a2a"
+            / "agents.json",
+            Path.home()
+            / "dev"
+            / "ella-ai"
+            / "services"
+            / "telegram-a2a"
+            / "agents.json",
             Path.home() / "ella-ai" / "services" / "telegram-a2a" / "agents.json",
         ]
     )
@@ -85,7 +99,9 @@ def _load_a2a_registry() -> dict:
             data = json.loads(inline)
             return data if isinstance(data, dict) else {}
         except json.JSONDecodeError as e:
-            logging.getLogger("claude-bridge").warning("Invalid A2A_BOT_REGISTRY_JSON: %s", e)
+            logging.getLogger("claude-bridge").warning(
+                "Invalid A2A_BOT_REGISTRY_JSON: %s", e
+            )
 
     for path in _a2a_registry_candidates():
         try:
@@ -94,7 +110,9 @@ def _load_a2a_registry() -> dict:
                     data = json.load(f)
                 return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError) as e:
-            logging.getLogger("claude-bridge").warning("Could not load A2A bot registry %s: %s", path, e)
+            logging.getLogger("claude-bridge").warning(
+                "Could not load A2A bot registry %s: %s", path, e
+            )
     return {}
 
 
@@ -156,7 +174,34 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 BRIDGE_VERSION = os.environ.get("BRIDGE_VERSION", "3.5.0")
 BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "a2a-quiet-status-pr685.7681cf5")
-BOT_TOKEN = os.environ.get("CLAUDE_TELEGRAM_BOT_TOKEN", "")
+HARNESS_CLI = os.environ.get("HARNESS_CLI", "claude").strip().lower() or "claude"
+HARNESS_LABEL = os.environ.get("HARNESS_LABEL", "").strip() or {
+    "claude": "Claude Code",
+    "opencode": "OpenCode",
+    "kilo": "Kilo Code",
+}.get(HARNESS_CLI, HARNESS_CLI.title())
+HARNESS_SERVICE_NAME = (
+    os.environ.get("HARNESS_SERVICE_NAME", "").strip()
+    or f"{HARNESS_CLI}-telegram-bridge"
+)
+HARNESS_TOKEN_ENV = os.environ.get("HARNESS_TOKEN_ENV", "").strip() or {
+    "claude": "CLAUDE_TELEGRAM_BOT_TOKEN",
+    "opencode": "OPENCODE_TELEGRAM_BOT_TOKEN",
+    "kilo": "KILOCODE_TELEGRAM_BOT_TOKEN",
+}.get(HARNESS_CLI, "TELEGRAM_BOT_TOKEN")
+HARNESS_AGENT = os.environ.get("HARNESS_AGENT", "").strip()
+HARNESS_SESSION_BACKEND = (
+    os.environ.get(
+        "HARNESS_SESSION_BACKEND",
+        "claude" if HARNESS_CLI == "claude" else "bridge",
+    )
+    .strip()
+    .lower()
+)
+BOT_TOKEN = (
+    os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    or os.environ.get(HARNESS_TOKEN_ENV, "").strip()
+)
 A2A_BOT_REGISTRY = _load_a2a_registry()
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
 ALLOWED_SENDER_IDS = _parse_int_set(
@@ -171,16 +216,21 @@ BOT_ID: int | None = None
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "glm-5.1:cloud")
 TELEGRAM_MAX_LENGTH = 4096
-A2A_GUIDANCE_COOLDOWN_SECONDS = int(os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300"))
+A2A_GUIDANCE_COOLDOWN_SECONDS = int(
+    os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300")
+)
 A2A_PROGRESS_MODE = os.environ.get("A2A_PROGRESS_MODE", "status").strip().lower()
 A2A_IGNORED = "__a2a_ignored__"
 POLL_TIMEOUT = 60
-STATE_FILE = Path(
-    os.environ.get(
-        "BRIDGE_STATE_DIR",
-        str(Path.home() / ".local" / "state" / "claude-telegram-bridge"),
+STATE_FILE = (
+    Path(
+        os.environ.get(
+            "BRIDGE_STATE_DIR",
+            str(Path.home() / ".local" / "state" / HARNESS_SERVICE_NAME),
+        )
     )
-) / "state.json"
+    / "state.json"
+)
 HOME = os.environ.get("BRIDGE_DEFAULT_FOLDER", str(Path.home()))
 MEDIA_DIR = Path("/tmp/tg-bridge-media")
 
@@ -234,7 +284,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(
-            os.path.expanduser("~/.openclaw/workspace/logs/claude-telegram-bridge.log")
+            os.path.expanduser(f"~/.openclaw/workspace/logs/{HARNESS_SERVICE_NAME}.log")
         ),
     ],
 )
@@ -258,7 +308,7 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
     if not matched_prefix:
         return False, ""
 
-    payload_text = raw_stripped[len(matched_prefix):].strip()
+    payload_text = raw_stripped[len(matched_prefix) :].strip()
     if not payload_text:
         log.warning("Rejected empty A2A handoff for @%s", BOT_USERNAME)
         return False, ""
@@ -355,7 +405,7 @@ def _validate_handoff_envelope(raw: str, target_username: str) -> tuple[bool, st
     if not matched_prefix:
         return False, f"response must start with /handoff@{canonical_target}"
 
-    json_text = stripped[len(matched_prefix):].strip()
+    json_text = stripped[len(matched_prefix) :].strip()
     if not json_text:
         return False, "response is missing the JSON envelope after the command"
 
@@ -373,7 +423,10 @@ def _validate_handoff_envelope(raw: str, target_username: str) -> tuple[bool, st
         if key not in payload
     ]
     if missing:
-        return False, f"response JSON envelope missing required fields: {', '.join(missing)}"
+        return (
+            False,
+            f"response JSON envelope missing required fields: {', '.join(missing)}",
+        )
 
     if not str(payload.get("task_id") or "").strip():
         return False, "response JSON envelope must include a non-empty task_id"
@@ -428,7 +481,9 @@ def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
     return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
 
 
-def should_process_group_message(message: dict, text: str, caption: str) -> tuple[bool, str, str, str | None]:
+def should_process_group_message(
+    message: dict, text: str, caption: str
+) -> tuple[bool, str, str, str | None]:
     """Return whether a message should run, sanitized content, and optional bridge reply."""
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
@@ -453,12 +508,16 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
 
     if chat_type == "private":
         if sender_is_bot or user_id not in ALLOWED_USERS:
-            log.warning("Rejected private message from sender %s (%s)", user_id, username)
+            log.warning(
+                "Rejected private message from sender %s (%s)", user_id, username
+            )
             return False, text, caption, None
         return True, text, caption, None
 
     if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
-        log.warning("Rejected message from non-allowlisted chat %s type=%s", chat_id, chat_type)
+        log.warning(
+            "Rejected message from non-allowlisted chat %s type=%s", chat_id, chat_type
+        )
         return False, text, caption, None
 
     if chat_type in {"group", "supergroup", "channel"}:
@@ -470,13 +529,25 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
             if not ok and prompt == A2A_IGNORED:
                 return False, text, caption, None
             if not ok and raw and _is_a2a_guidance(raw):
-                log.info("Ignored peer A2A syntax guidance from bot sender %s (%s)", user_id, username)
+                log.info(
+                    "Ignored peer A2A syntax guidance from bot sender %s (%s)",
+                    user_id,
+                    username,
+                )
                 return False, text, caption, None
             if not ok and raw:
                 if _should_send_a2a_guidance(chat_id, user_id):
-                    log.info("Sending A2A syntax guidance to bot sender %s (%s)", user_id, username)
+                    log.info(
+                        "Sending A2A syntax guidance to bot sender %s (%s)",
+                        user_id,
+                        username,
+                    )
                     return False, text, caption, _a2a_guidance_message()
-                log.info("Suppressed repeated A2A syntax guidance to bot sender %s (%s)", user_id, username)
+                log.info(
+                    "Suppressed repeated A2A syntax guidance to bot sender %s (%s)",
+                    user_id,
+                    username,
+                )
                 return False, text, caption, None
             return (ok, prompt if text else text, prompt if caption else caption, None)
 
@@ -486,13 +557,19 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
 
         mention = f"@{BOT_USERNAME}".lower() if BOT_USERNAME else ""
         reply = message.get("reply_to_message") or {}
-        reply_to_bot = ((reply.get("from") or {}).get("id") == BOT_ID) if BOT_ID else False
+        reply_to_bot = (
+            ((reply.get("from") or {}).get("id") == BOT_ID) if BOT_ID else False
+        )
         mentions_bot = bool(mention and mention in raw.lower())
         if not mentions_bot and not reply_to_bot:
             log.info("Ignored group message not addressed to @%s", BOT_USERNAME)
             return False, text, caption, None
         if mentions_bot:
-            stripped = raw.replace(f"@{BOT_USERNAME}", "").replace(f"@{BOT_USERNAME.lower()}", "").strip()
+            stripped = (
+                raw.replace(f"@{BOT_USERNAME}", "")
+                .replace(f"@{BOT_USERNAME.lower()}", "")
+                .strip()
+            )
             if text:
                 text = stripped
             else:
@@ -501,17 +578,22 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
 
     return False, text, caption, None
 
+
 # --- State ---
 
 # Track active Claude subprocess so we can handle graceful shutdown
-_active_claude_proc: asyncio.subprocess.Process | None = None
-_active_claude_chat_id: int | None = None
+_active_harness_proc: asyncio.subprocess.Process | None = None
+_active_harness_chat_id: int | None = None
 _shutting_down = False
 
 # Watchdog state
-_watchdog_current_tool: dict | None = None  # {"name", "command", "input_summary", "started"}
+_watchdog_current_tool: dict | None = (
+    None  # {"name", "command", "input_summary", "started"}
+)
 _watchdog_last_event: float = 0.0
-_watchdog_last_progress: float = 0.0  # Last time a tool_result/new tool_use arrived (session is progressing)
+_watchdog_last_progress: float = (
+    0.0  # Last time a tool_result/new tool_use arrived (session is progressing)
+)
 _watchdog_evaluation_in_progress = False
 _a2a_guidance_last_sent: dict[str, float] = {}
 
@@ -573,10 +655,14 @@ def _load_dispatch_nodes() -> dict:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
-        log.warning("Invalid DISPATCH_NODES_JSON, using local-only dispatch nodes: %s", e)
+        log.warning(
+            "Invalid DISPATCH_NODES_JSON, using local-only dispatch nodes: %s", e
+        )
         return DEFAULT_DISPATCH_NODES
     if not isinstance(parsed, dict) or not parsed:
-        log.warning("DISPATCH_NODES_JSON must be a non-empty object; using local-only dispatch nodes")
+        log.warning(
+            "DISPATCH_NODES_JSON must be a non-empty object; using local-only dispatch nodes"
+        )
         return DEFAULT_DISPATCH_NODES
     return parsed
 
@@ -591,7 +677,9 @@ def load_state():
             with open(STATE_FILE) as f:
                 saved = json.load(f)
                 state.update(saved)
-            state["active_folder"] = resolve_existing_cwd(state.get("active_folder"), HOME)
+            state["active_folder"] = resolve_existing_cwd(
+                state.get("active_folder"), HOME
+            )
             state["folders"] = {
                 name: resolve_existing_cwd(path, HOME)
                 for name, path in state.get("folders", {"home": HOME}).items()
@@ -604,7 +692,9 @@ def load_state():
                 state["folders"] = {"home": HOME}
             if "folder_sessions" not in state:
                 state["folder_sessions"] = {}
-            log.info(f"Loaded state: folder={state['active_folder']}, {len(state['sessions'])} sessions")
+            log.info(
+                f"Loaded state: folder={state['active_folder']}, {len(state['sessions'])} sessions"
+            )
         except Exception as e:
             log.warning(f"Failed to load state: {e}")
 
@@ -664,7 +754,9 @@ async def dispatch_job(
     if node_cfg.get("ssh"):
         work_cwd = cwd or node_cfg.get("cwd") or state.get("active_folder", "~")
     else:
-        work_cwd = resolve_existing_cwd(cwd or node_cfg.get("cwd") or state.get("active_folder"), HOME)
+        work_cwd = resolve_existing_cwd(
+            cwd or node_cfg.get("cwd") or state.get("active_folder"), HOME
+        )
     claude_bin = node_cfg["claude"]
 
     worker_prompt = (
@@ -693,7 +785,7 @@ async def dispatch_job(
         "set -e\n"
         f"cd {shlex.quote(work_cwd)}\n"
         f"prompt=$(cat {shlex.quote(prompt_file)})\n"
-        f"{shlex.quote(claude_bin)} -p \"$prompt\" "
+        f'{shlex.quote(claude_bin)} -p "$prompt" '
         f"--dangerously-skip-permissions --max-turns 50 "
         f"--output-format text "
         f"> {jobs_dir}/{issue_number}.out 2>&1\n"
@@ -705,7 +797,9 @@ async def dispatch_job(
 
         # Create jobs dir
         proc = await asyncio.create_subprocess_exec(
-            "ssh", ssh_target, f"mkdir -p {jobs_dir}",
+            "ssh",
+            ssh_target,
+            f"mkdir -p {jobs_dir}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -713,7 +807,9 @@ async def dispatch_job(
 
         # Write prompt file
         proc = await asyncio.create_subprocess_exec(
-            "ssh", ssh_target, f"cat > {prompt_file}",
+            "ssh",
+            ssh_target,
+            f"cat > {prompt_file}",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -724,7 +820,8 @@ async def dispatch_job(
 
         # Write runner script
         proc = await asyncio.create_subprocess_exec(
-            "ssh", ssh_target,
+            "ssh",
+            ssh_target,
             f"cat > {script_file} && chmod +x {script_file}",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -736,7 +833,8 @@ async def dispatch_job(
 
         # Launch tmux — trivial quoting, just runs a script file
         proc = await asyncio.create_subprocess_exec(
-            "ssh", ssh_target,
+            "ssh",
+            ssh_target,
             f"tmux new-session -d -s {tmux_name} 'bash {script_file}'",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -784,7 +882,9 @@ async def _check_tmux_alive(tmux_name: str, node: str) -> bool:
         node_cfg = DISPATCH_NODES.get(node, {})
         if node_cfg.get("ssh"):
             proc = await asyncio.create_subprocess_exec(
-                "ssh", node_cfg["ssh"], f"tmux has-session -t {shlex.quote(tmux_name)} 2>/dev/null && echo alive",
+                "ssh",
+                node_cfg["ssh"],
+                f"tmux has-session -t {shlex.quote(tmux_name)} 2>/dev/null && echo alive",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -846,34 +946,55 @@ async def cmd_dispatch(chat_id: int, msg_id: int, arg: str):
     description = " ".join(clean_parts)
 
     if not description:
-        await send_message(chat_id, "Usage: `/dispatch [--node NODE] [--repo REPO] <task description>`", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            "Usage: `/dispatch [--node NODE] [--repo REPO] <task description>`",
+            reply_to=msg_id,
+        )
         return
 
     if not repo:
-        await send_message(chat_id, "No repo configured. Use `--repo owner/name` or set `DISPATCH_DEFAULT_REPO` in .env", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            "No repo configured. Use `--repo owner/name` or set `DISPATCH_DEFAULT_REPO` in .env",
+            reply_to=msg_id,
+        )
         return
 
     if node not in DISPATCH_NODES:
         nodes_list = ", ".join(DISPATCH_NODES.keys())
-        await send_message(chat_id, f"Unknown node: `{node}`. Available: {nodes_list}", reply_to=msg_id)
+        await send_message(
+            chat_id, f"Unknown node: `{node}`. Available: {nodes_list}", reply_to=msg_id
+        )
         return
 
     # Create GitHub issue
-    await send_message(chat_id, f"Creating issue and dispatching to `{node}`...", reply_to=msg_id)
+    await send_message(
+        chat_id, f"Creating issue and dispatching to `{node}`...", reply_to=msg_id
+    )
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "gh", "issue", "create",
-            "--repo", repo,
-            "--title", description[:80],
-            "--body", f"## Job Spec\n\n{description}\n\n---\n*Dispatched by claude-telegram-bridge to `{node}`*",
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            description[:80],
+            "--body",
+            f"## Job Spec\n\n{description}\n\n---\n*Dispatched by claude-telegram-bridge to `{node}`*",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
 
         if proc.returncode != 0:
-            await send_message(chat_id, f"Failed to create issue: {stderr.decode()[:200]}", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Failed to create issue: {stderr.decode()[:200]}",
+                reply_to=msg_id,
+            )
             return
 
         # Parse issue URL -> number
@@ -902,7 +1023,11 @@ async def cmd_dispatch(chat_id: int, msg_id: int, arg: str):
                 reply_to=msg_id,
             )
     except Exception as e:
-        await send_message(chat_id, f"Issue created ({issue_url}) but dispatch error: {e}", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            f"Issue created ({issue_url}) but dispatch error: {e}",
+            reply_to=msg_id,
+        )
 
 
 async def cmd_jobs(chat_id: int, msg_id: int):
@@ -912,18 +1037,29 @@ async def cmd_jobs(chat_id: int, msg_id: int):
         return
 
     lines = ["*Dispatch Jobs*\n"]
-    for job_id, job in sorted(_dispatch_jobs.items(), key=lambda x: x[1].get("created", ""), reverse=True):
-        alive = await _check_tmux_alive(job.get("tmux_session", ""), job.get("node", "local"))
+    for job_id, job in sorted(
+        _dispatch_jobs.items(), key=lambda x: x[1].get("created", ""), reverse=True
+    ):
+        alive = await _check_tmux_alive(
+            job.get("tmux_session", ""), job.get("node", "local")
+        )
 
         # Update status if tmux died
         if job.get("status") == "running" and not alive:
             job["status"] = "completed"
             _save_jobs()
 
-        icon = {"running": "\u25b6", "completed": "\u2705", "failed": "\u274c", "killed": "\u26d4"}.get(job.get("status", "?"), "\u2753")
+        icon = {
+            "running": "\u25b6",
+            "completed": "\u2705",
+            "failed": "\u274c",
+            "killed": "\u26d4",
+        }.get(job.get("status", "?"), "\u2753")
         node = job.get("node", "local")
         age = _format_age(job.get("created", ""))
-        lines.append(f"{icon} #{job_id} on `{node}` ({age}) \u2014 {job.get('status', '?')}")
+        lines.append(
+            f"{icon} #{job_id} on `{node}` ({age}) \u2014 {job.get('status', '?')}"
+        )
 
     await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
 
@@ -938,7 +1074,9 @@ async def cmd_job_status(chat_id: int, msg_id: int, arg: str):
     job_id = parts[0].lstrip("#")
     job = _dispatch_jobs.get(job_id)
     if not job:
-        await send_message(chat_id, f"No tracked job #{job_id}. Use `/jobs` to list.", reply_to=msg_id)
+        await send_message(
+            chat_id, f"No tracked job #{job_id}. Use `/jobs` to list.", reply_to=msg_id
+        )
         return
 
     node = job.get("node", "local")
@@ -951,10 +1089,14 @@ async def cmd_job_status(chat_id: int, msg_id: int, arg: str):
     # 2. Tail output file
     output_tail = ""
     try:
-        output_path = shlex.quote(job.get("output_file", f"/tmp/claude-jobs/{job_id}.out"))
+        output_path = shlex.quote(
+            job.get("output_file", f"/tmp/claude-jobs/{job_id}.out")
+        )
         if node_cfg.get("ssh"):
             proc = await asyncio.create_subprocess_exec(
-                "ssh", node_cfg["ssh"], f"tail -20 {output_path} 2>/dev/null",
+                "ssh",
+                node_cfg["ssh"],
+                f"tail -20 {output_path} 2>/dev/null",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -974,10 +1116,16 @@ async def cmd_job_status(chat_id: int, msg_id: int, arg: str):
     if job.get("repo"):
         try:
             proc = await asyncio.create_subprocess_exec(
-                "gh", "issue", "view", str(job["issue"]),
-                "--repo", job["repo"],
-                "--json", "state,title,comments",
-                "--jq", '.state + " | " + .title + " | " + (.comments | length | tostring) + " comments"',
+                "gh",
+                "issue",
+                "view",
+                str(job["issue"]),
+                "--repo",
+                job["repo"],
+                "--json",
+                "state,title,comments",
+                "--jq",
+                '.state + " | " + .title + " | " + (.comments | length | tostring) + " comments"',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1010,7 +1158,9 @@ async def cmd_job_kill(chat_id: int, msg_id: int, arg: str):
     """Kill a running tmux worker."""
     job_id = arg.strip().lstrip("#")
     if not job_id:
-        await send_message(chat_id, "Usage: `/job-kill <issue-number>`", reply_to=msg_id)
+        await send_message(
+            chat_id, "Usage: `/job-kill <issue-number>`", reply_to=msg_id
+        )
         return
 
     job = _dispatch_jobs.get(job_id)
@@ -1026,7 +1176,9 @@ async def cmd_job_kill(chat_id: int, msg_id: int, arg: str):
         safe_tmux = shlex.quote(tmux_name)
         if node_cfg.get("ssh"):
             proc = await asyncio.create_subprocess_exec(
-                "ssh", node_cfg["ssh"], f"tmux kill-session -t {safe_tmux} 2>/dev/null",
+                "ssh",
+                node_cfg["ssh"],
+                f"tmux kill-session -t {safe_tmux} 2>/dev/null",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1039,9 +1191,13 @@ async def cmd_job_kill(chat_id: int, msg_id: int, arg: str):
         await asyncio.wait_for(proc.communicate(), timeout=15)
         job["status"] = "killed"
         _save_jobs()
-        await send_message(chat_id, f"Killed job #{job_id} on `{node}`.", reply_to=msg_id)
+        await send_message(
+            chat_id, f"Killed job #{job_id} on `{node}`.", reply_to=msg_id
+        )
     except Exception as e:
-        await send_message(chat_id, f"Error killing job #{job_id}: {e}", reply_to=msg_id)
+        await send_message(
+            chat_id, f"Error killing job #{job_id}: {e}", reply_to=msg_id
+        )
 
 
 def record_session(session_id: str, label: str = ""):
@@ -1092,15 +1248,27 @@ def get_claude_sessions(folder_path: str | None = None) -> list[dict]:
         return []
 
 
+def get_harness_sessions(folder_path: str | None = None) -> list[dict]:
+    if HARNESS_SESSION_BACKEND == "claude":
+        return get_claude_sessions(folder_path)
+    return []
+
+
+def get_harness_session_label(entry: dict) -> str:
+    return str(entry.get("summary") or entry.get("firstPrompt") or "").strip()
+
+
 def get_latest_session_id(folder_path: str | None = None) -> str | None:
     """Get the most recent session ID for a folder."""
-    sessions = get_claude_sessions(folder_path)
+    sessions = get_harness_sessions(folder_path)
     if sessions:
         return sessions[0]["sessionId"]
     return state.get("default_session_id")
 
 
-def read_session_messages(session_id: str, folder_path: str | None = None, last_n: int = 5) -> list[dict]:
+def read_session_messages(
+    session_id: str, folder_path: str | None = None, last_n: int = 5
+) -> list[dict]:
     """Read the last N human/assistant text messages from a session JSONL file.
 
     Returns list of {role, text, timestamp} dicts.
@@ -1134,7 +1302,11 @@ def read_session_messages(session_id: str, folder_path: str | None = None, last_
 
                 # Extract text from content
                 if isinstance(content, list):
-                    texts = [b.get("text", "") for b in content if b.get("type") == "text" and b.get("text")]
+                    texts = [
+                        b.get("text", "")
+                        for b in content
+                        if b.get("type") == "text" and b.get("text")
+                    ]
                     if not texts:
                         continue  # tool use only, skip
                     text = "\n".join(texts)
@@ -1164,8 +1336,8 @@ def find_session(query: str) -> list[str]:
             matches.append(sid)
             seen.add(sid)
 
-    # ID prefix match in Claude CLI sessions
-    for entry in get_claude_sessions():
+    # ID prefix match in harness CLI sessions
+    for entry in get_harness_sessions():
         sid = entry["sessionId"]
         if sid not in seen and sid.startswith(query):
             matches.append(sid)
@@ -1183,14 +1355,13 @@ def find_session(query: str) -> list[str]:
             matches.append(sid)
             seen.add(sid)
 
-    # Summary/firstPrompt match in Claude CLI sessions
-    for entry in get_claude_sessions():
+    # Summary/firstPrompt match in harness CLI sessions
+    for entry in get_harness_sessions():
         sid = entry["sessionId"]
         if sid in seen:
             continue
-        summary = entry.get("summary", "").lower()
-        first = entry.get("firstPrompt", "").lower()
-        if query_lower in summary or query_lower in first:
+        label = get_harness_session_label(entry).lower()
+        if query_lower in label:
             matches.append(sid)
             seen.add(sid)
 
@@ -1213,7 +1384,9 @@ _http_client: httpx.AsyncClient | None = None
 async def get_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(POLL_TIMEOUT + 30, connect=10))
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(POLL_TIMEOUT + 30, connect=10)
+        )
     return _http_client
 
 
@@ -1227,7 +1400,9 @@ async def tg_api(method: str, data: dict | None = None) -> dict | None:
             resp = await client.get(url)
         result = resp.json()
         if not result.get("ok"):
-            log.warning(f"Telegram API {method} not ok: {result.get('description', '')}")
+            log.warning(
+                f"Telegram API {method} not ok: {result.get('description', '')}"
+            )
         return result
     except Exception as e:
         log.error(f"Telegram API error ({method}): {e}")
@@ -1313,7 +1488,9 @@ async def send_message(chat_id: int, text: str, reply_to: int | None = None):
         result = await tg_api("sendMessage", data)
         if result is None or not result.get("ok"):
             # Markdown failed — retry as plain text (strip parse_mode, use original text)
-            log.info(f"Markdown send failed, retrying as plain text ({len(chunk)} chars)")
+            log.info(
+                f"Markdown send failed, retrying as plain text ({len(chunk)} chars)"
+            )
             data["text"] = chunk
             data.pop("parse_mode", None)
             await tg_api("sendMessage", data)
@@ -1329,7 +1506,10 @@ async def send_plain_message(chat_id: int, text: str, reply_to: int | None = Non
 
 # --- Media Download ---
 
-async def download_telegram_file(file_id: str, filename: str, msg_id: int) -> Path | None:
+
+async def download_telegram_file(
+    file_id: str, filename: str, msg_id: int
+) -> Path | None:
     """Download a Telegram file by file_id. Returns local path or None."""
     try:
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1411,16 +1591,24 @@ async def extract_media(message: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-async def handle_media_message(chat_id: int, msg_id: int, message: dict, user_text: str):
+async def handle_media_message(
+    chat_id: int, msg_id: int, message: dict, user_text: str
+):
     """Handle a message containing media (photo, document, etc.)."""
     media_path, media_type = await extract_media(message)
 
     if not media_path:
-        await send_message(chat_id, "Could not download the attachment. Try sending as a file.", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            "Could not download the attachment. Try sending as a file.",
+            reply_to=msg_id,
+        )
         return
 
     if media_type == "image":
-        prompt = f"[The user sent an image. View it with the Read tool at: {media_path}]"
+        prompt = (
+            f"[The user sent an image. View it with the Read tool at: {media_path}]"
+        )
     elif media_type == "voice message":
         prompt = f"[The user sent a voice message. The audio file is at: {media_path}]"
     else:
@@ -1447,9 +1635,50 @@ async def cleanup_old_media():
             pass
 
 
-# --- Claude Code ---
+# --- Harness CLI ---
 
-async def run_claude(
+
+def _extract_event_session_id(event: dict) -> str | None:
+    candidates = [
+        event.get("session_id"),
+        event.get("sessionId"),
+        event.get("sessionID"),
+        (event.get("session") or {}).get("id")
+        if isinstance(event.get("session"), dict)
+        else None,
+        (event.get("message") or {}).get("session_id")
+        if isinstance(event.get("message"), dict)
+        else None,
+        (event.get("message") or {}).get("sessionId")
+        if isinstance(event.get("message"), dict)
+        else None,
+        (event.get("message") or {}).get("sessionID")
+        if isinstance(event.get("message"), dict)
+        else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _extract_event_text(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("result", "text", "content", "message"):
+            extracted = _extract_event_text(value.get(key))
+            if extracted:
+                return extracted
+        return ""
+    if isinstance(value, list):
+        parts = [_extract_event_text(item) for item in value]
+        joined = "\n".join(part for part in parts if part)
+        return joined.strip()
+    return ""
+
+
+async def run_harness(
     prompt: str,
     chat_id: int,
     session_id: str | None = None,
@@ -1457,40 +1686,59 @@ async def run_claude(
     suppress_progress_messages: bool = False,
     suppress_footer: bool = False,
 ) -> tuple[str, str | None]:
-    """Run Claude Code CLI with streaming. Sends progress to Telegram as events arrive.
+    """Run the configured harness CLI with streaming. Sends progress to Telegram as events arrive.
 
     Uses --output-format stream-json to read events line-by-line.
     Watchdog coroutine monitors for stuck tool calls (started by _process_prompt).
     Returns (final_result_text, session_id).
     """
-    global _active_claude_proc, _watchdog_current_tool, _watchdog_last_progress
-
-    cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose"]
-
-    if not new_session:
-        sid = session_id or state.get("default_session_id")
-        if sid:
-            cmd.extend(["--resume", sid])
-
-    cmd.extend([
-        "--dangerously-skip-permissions",
-        "--append-system-prompt",
-        "IMPORTANT: You are running inside the Telegram bridge service. "
-        "NEVER run systemctl, service, or process management commands "
-        "(systemctl, kill, pkill, service, restart, stop). "
-        "These will kill your own host process and crash the bridge. "
-        "If asked about service status, explain you cannot check from inside the bridge.",
-        "-p", prompt,
-    ])
+    global _active_harness_proc, _watchdog_current_tool, _watchdog_last_progress
 
     cwd = state["active_folder"]
-    log.info(f"Claude in {cwd}: {' '.join(cmd[:8])}... | prompt: {prompt[:80]}")
+    proc_env = os.environ.copy()
+    sid = None if new_session else (session_id or state.get("default_session_id"))
+
+    if HARNESS_CLI == "claude":
+        cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose"]
+        if sid:
+            cmd.extend(["--resume", sid])
+        cmd.extend(
+            [
+                "--dangerously-skip-permissions",
+                "--append-system-prompt",
+                "IMPORTANT: You are running inside the Telegram bridge service. "
+                "NEVER run systemctl, service, or process management commands "
+                "(systemctl, kill, pkill, service, restart, stop). "
+                "These will kill your own host process and crash the bridge. "
+                "If asked about service status, explain you cannot check from inside the bridge.",
+                "-p",
+                prompt,
+            ]
+        )
+        if BRIDGE_MODEL:
+            proc_env["BRIDGE_MODEL"] = BRIDGE_MODEL
+            proc_env["ANTHROPIC_MODEL"] = BRIDGE_MODEL
+    elif HARNESS_CLI in {"opencode", "kilo"}:
+        cmd = [HARNESS_CLI, "run", "--format", "json", "--dir", cwd]
+        if sid:
+            cmd.extend(["--session", sid])
+        if BRIDGE_MODEL:
+            cmd.extend(["-m", BRIDGE_MODEL])
+        if HARNESS_AGENT:
+            cmd.extend(["--agent", HARNESS_AGENT])
+        cmd.append(prompt)
+    else:
+        return f"Error: unsupported harness `{HARNESS_CLI}`", None
+
+    log.info(
+        f"{HARNESS_LABEL} in {cwd}: {' '.join(cmd[:8])}... | prompt: {prompt[:80]}"
+    )
 
     result_text = None
     result_session_id = None
     result_duration_ms = 0
     last_activity_update = 0
-    tool_uses = []  # Track what Claude is doing
+    tool_uses = []  # Track what the harness is doing
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1498,10 +1746,11 @@ async def run_claude(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=proc_env,
             # Increase buffer limit to 4MB to handle large stream-json events
             limit=4 * 1024 * 1024,
         )
-        _active_claude_proc = proc
+        _active_harness_proc = proc
 
         async for raw_line in proc.stdout:
             _watchdog_last_event = time.time()  # Watchdog heartbeat
@@ -1515,15 +1764,22 @@ async def run_claude(
                 continue
 
             event_type = event.get("type")
+            generic_session_id = _extract_event_session_id(event)
+            if generic_session_id:
+                result_session_id = generic_session_id
 
-            if event_type == "system" and event.get("subtype") == "init":
+            if (
+                HARNESS_CLI == "claude"
+                and event_type == "system"
+                and event.get("subtype") == "init"
+            ):
                 result_session_id = event.get("session_id")
                 log.info(f"Stream started: session={result_session_id}")
 
-            elif event_type == "assistant":
+            elif HARNESS_CLI == "claude" and event_type == "assistant":
                 msg = event.get("message", {})
                 content = msg.get("content", [])
-                # Check for tool use — report what Claude is doing
+                # Check for tool use — report what the harness is doing
                 for block in content:
                     if block.get("type") == "tool_use":
                         tool_name = block.get("name", "")
@@ -1534,35 +1790,48 @@ async def run_claude(
                             tool_uses.append(desc)
                             now = time.time()
                             # Send activity update at most every 15s
-                            if not suppress_progress_messages and now - last_activity_update > 15:
+                            if (
+                                not suppress_progress_messages
+                                and now - last_activity_update > 15
+                            ):
                                 await send_message(chat_id, f"_... {desc}_")
                                 last_activity_update = now
                         # Watchdog: track current tool call
                         _watchdog_current_tool = {
                             "name": tool_name,
-                            "command": tool_input.get("command", "") if tool_name == "Bash" else "",
+                            "command": tool_input.get("command", "")
+                            if tool_name == "Bash"
+                            else "",
                             "input_summary": desc or f"{tool_name}",
                             "started": time.time(),
                         }
                         _watchdog_last_progress = time.time()
 
-            elif event_type == "tool_result":
+            elif HARNESS_CLI == "claude" and event_type == "tool_result":
                 # Tool completed — clear watchdog tracking and mark progress
                 _watchdog_current_tool = None
                 _watchdog_last_progress = time.time()
 
             elif event_type == "result":
                 _watchdog_current_tool = None  # Clear on final result too
-                result_text = event.get("result", "")
-                result_session_id = event.get("session_id", result_session_id)
+                result_text = _extract_event_text(
+                    event.get("result") or event.get("text") or event
+                )
+                result_session_id = generic_session_id or event.get(
+                    "session_id", result_session_id
+                )
                 result_duration_ms = event.get("duration_ms", 0)
                 is_error = event.get("is_error", False)
                 if is_error:
                     result_text = f"Error: {result_text}"
+            elif HARNESS_CLI in {"opencode", "kilo"}:
+                extracted_text = _extract_event_text(event)
+                if extracted_text and event_type in {"assistant", "message", "output"}:
+                    result_text = extracted_text
 
         # Wait for process to fully exit
         await proc.wait()
-        _active_claude_proc = None
+        _active_harness_proc = None
 
         # Check stderr if no result
         if result_text is None:
@@ -1570,9 +1839,11 @@ async def run_claude(
             if proc.stderr:
                 err_bytes = await proc.stderr.read()
                 err = err_bytes.decode("utf-8", errors="replace").strip()
-            if ("No conversation found" in err or "no recent" in err.lower()) and not new_session:
+            if (
+                "No conversation found" in err or "no recent" in err.lower()
+            ) and not new_session:
                 log.info("No existing session found, starting fresh")
-                return await run_claude(
+                return await run_harness(
                     prompt,
                     chat_id,
                     new_session=True,
@@ -1585,12 +1856,12 @@ async def run_claude(
             return result_text, result_session_id
 
         folder_name = get_folder_display_name(cwd)
-        footer = f"\n\n_({result_duration_ms/1000:.1f}s \u2022 {folder_name})_"
+        footer = f"\n\n_({result_duration_ms / 1000:.1f}s \u2022 {folder_name})_"
         return result_text + footer, result_session_id
 
     except Exception as e:
-        _active_claude_proc = None
-        log.error(f"Claude stream error: {e}")
+        _active_harness_proc = None
+        log.error(f"{HARNESS_LABEL} stream error: {e}")
         return f"Error: {e}", None
 
 
@@ -1643,9 +1914,9 @@ def _is_instant_kill_command(command: str) -> bool:
 
 
 async def _watchdog_monitor(chat_id: int, cwd: str):
-    """Monitor active Claude process for stuck tool calls.
+    """Monitor active harness process for stuck tool calls.
 
-    Runs as a concurrent task alongside run_claude(). Checks every 10s.
+    Runs as a concurrent task alongside run_harness(). Checks every 10s.
     Three-tier response:
       1. Instant kill for known-infinite commands (blocklist)
       2. Claude-as-judge evaluation for ambiguous hangs
@@ -1662,7 +1933,7 @@ async def _watchdog_monitor(chat_id: int, cwd: str):
         await asyncio.sleep(10)
 
         # Check if process is still running
-        if _active_claude_proc is None or _active_claude_proc.returncode is not None:
+        if _active_harness_proc is None or _active_harness_proc.returncode is not None:
             return
 
         now = time.time()
@@ -1739,7 +2010,9 @@ async def _watchdog_monitor(chat_id: int, cwd: str):
                 elif verdict["action"] == "EXTEND":
                     extend_mins = verdict.get("minutes", 5)
                     tool["started"] = now - timeout + (extend_mins * 60)
-                    log.info(f"Watchdog: extending {extend_mins}min — {verdict['reason']}")
+                    log.info(
+                        f"Watchdog: extending {extend_mins}min — {verdict['reason']}"
+                    )
                     await send_message(
                         chat_id,
                         f"_Watchdog: extending timeout {extend_mins}min — {verdict['reason']}_",
@@ -1761,7 +2034,7 @@ async def _watchdog_monitor(chat_id: int, cwd: str):
 
 
 async def _watchdog_kill(chat_id: int, reason: str, tool_info: dict | None):
-    """Kill the active Claude process and notify user."""
+    """Kill the active harness process and notify user."""
     tool_desc = ""
     if tool_info:
         elapsed = time.time() - tool_info["started"]
@@ -1773,17 +2046,17 @@ async def _watchdog_kill(chat_id: int, reason: str, tool_info: dict | None):
 
     log.warning(f"Watchdog KILL: {reason}")
 
-    if _active_claude_proc and _active_claude_proc.returncode is None:
+    if _active_harness_proc and _active_harness_proc.returncode is None:
         try:
-            _active_claude_proc.send_signal(signal.SIGINT)
+            _active_harness_proc.send_signal(signal.SIGINT)
             try:
-                await asyncio.wait_for(_active_claude_proc.wait(), timeout=5)
+                await asyncio.wait_for(_active_harness_proc.wait(), timeout=5)
             except asyncio.TimeoutError:
-                _active_claude_proc.terminate()
+                _active_harness_proc.terminate()
                 try:
-                    await asyncio.wait_for(_active_claude_proc.wait(), timeout=5)
+                    await asyncio.wait_for(_active_harness_proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
-                    _active_claude_proc.kill()
+                    _active_harness_proc.kill()
         except ProcessLookupError:
             pass
 
@@ -1796,7 +2069,7 @@ async def _watchdog_kill(chat_id: int, reason: str, tool_info: dict | None):
 
 
 async def _watchdog_evaluate(tool_info: dict, elapsed: float, cwd: str) -> dict:
-    """Ask Claude (separate session) whether a stuck process should be killed.
+    """Ask Claude Code (separate session) whether a stuck process should be killed.
 
     Returns: {"action": "KILL"|"WAIT"|"EXTEND", "reason": str, "minutes": int}
     """
@@ -1829,17 +2102,22 @@ async def _watchdog_evaluate(tool_info: dict, elapsed: float, cwd: str) -> dict:
         f"EXTEND:10 pytest on polybot has 200+ tests, may need 15min total"
     )
 
-    log.info(f"Watchdog: evaluating {tool_name} ({elapsed:.0f}s) via {WATCHDOG_EVAL_NODE}")
+    log.info(
+        f"Watchdog: evaluating {tool_name} ({elapsed:.0f}s) via {WATCHDOG_EVAL_NODE}"
+    )
 
     # Use -p (print mode, one-shot) — no --resume since print mode requires UUID
     # session IDs and the eval is stateless. Each evaluation is independent.
     if WATCHDOG_EVAL_NODE == "local":
         cmd = [
             "claude",
-            "-p", eval_prompt,
+            "-p",
+            eval_prompt,
             "--dangerously-skip-permissions",
-            "--max-turns", "1",
-            "--output-format", "text",
+            "--max-turns",
+            "1",
+            "--output-format",
+            "text",
         ]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1855,7 +2133,15 @@ async def _watchdog_evaluate(tool_info: dict, elapsed: float, cwd: str) -> dict:
             f"-p {shlex.quote(eval_prompt)} "
             f"--dangerously-skip-permissions --max-turns 1 --output-format text"
         )
-        cmd = ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no", remote, remote_cmd]
+        cmd = [
+            "ssh",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            remote,
+            remote_cmd,
+        ]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -1874,14 +2160,17 @@ async def _watchdog_evaluate(tool_info: dict, elapsed: float, cwd: str) -> dict:
     if not output:
         stderr_text = stderr.decode("utf-8", errors="replace")[:200] if stderr else ""
         log.warning(f"Watchdog evaluation empty output, stderr: {stderr_text}")
-        return {"action": "WAIT", "reason": f"Evaluation failed ({stderr_text[:60]}) — defaulting to wait"}
+        return {
+            "action": "WAIT",
+            "reason": f"Evaluation failed ({stderr_text[:60]}) — defaulting to wait",
+        }
 
     log.info(f"Watchdog evaluation response: {output[:200]}")
     return _parse_watchdog_verdict(output)
 
 
 def _parse_watchdog_verdict(output: str) -> dict:
-    """Parse KILL/WAIT/EXTEND verdict from Claude's response."""
+    """Parse KILL/WAIT/EXTEND verdict from the Claude Code evaluation response."""
     for line in reversed(output.strip().split("\n")):
         line = line.strip()
         if line.startswith("KILL:"):
@@ -1900,49 +2189,63 @@ def _parse_watchdog_verdict(output: str) -> dict:
 
     # No valid line found — default to WAIT (will retry later)
     log.warning(f"Watchdog: couldn't parse verdict from: {output[:200]}")
-    return {"action": "WAIT", "reason": f"Unparseable response (will retry): {output[:80]}"}
+    return {
+        "action": "WAIT",
+        "reason": f"Unparseable response (will retry): {output[:80]}",
+    }
 
 
 # --- Command Handlers ---
 
+
 async def handle_command(chat_id: int, msg_id: int, text: str):
     """Handle /commands."""
+    global BRIDGE_MODEL, HARNESS_AGENT
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].lower().split("@")[0]
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/help", "/start"):
         folder_name = get_folder_display_name(state["active_folder"])
-        await send_message(chat_id, (
-            f"*Claude Code Telegram Bridge v3.4*\n"
-            f"Active folder: `{folder_name}` (`{state['active_folder']}`)\n\n"
-            "Send any message, image, or file to chat with Claude Code.\n"
-            "Photos, documents, and voice messages are supported.\n"
-            "Session auto-continues the latest in current folder.\n\n"
-            "*Folder Commands:*\n"
-            "`/folders` \u2014 List project folders\n"
-            "`/folder <name>` \u2014 Switch folder\n"
-            "`/folder add <name> <path>` \u2014 Register folder\n"
-            "`/folder create <name> [path]` \u2014 Create new project\n"
-            "`/folder rm <name>` \u2014 Remove folder\n"
-            "`/clone <url> [name]` \u2014 Clone repo + switch\n"
-            "`/init` \u2014 Init current folder (git + CLAUDE.md)\n\n"
-            "*Session Commands:*\n"
-            "`/history [n]` \u2014 Last N messages from session\n"
-            "`/new [label]` \u2014 Fresh session in current folder\n"
-            "`/rename <label>` \u2014 Rename current session\n"
-            "`/save [label]` \u2014 Bookmark session\n"
-            "`/sessions` \u2014 List sessions for current folder\n"
-            "`/resume <id|name>` \u2014 Resume by ID or name\n"
-            "`/interrupt [msg]` \u2014 Stop Claude mid-run; optional msg next\n\n"
-            "*Job Dispatch:*\n"
-            "`/dispatch [--node N] [--repo R] desc` \u2014 Create issue + launch worker\n"
-            "`/jobs` \u2014 List active dispatch jobs\n"
-            "`/job N` \u2014 Check job status (tmux + issue + output)\n"
-            "`/job-kill N` \u2014 Kill a running worker\n\n"
-            "`/watchdog` \u2014 Watchdog status\n"
-            "`/status` \u2014 Bridge status"
-        ), reply_to=msg_id)
+        agent_command = ""
+        if HARNESS_CLI in {"opencode", "kilo"}:
+            agent_command = "`/agent [name|off]` — Show/set harness agent profile\n"
+        await send_message(
+            chat_id,
+            (
+                f"*{HARNESS_LABEL} Telegram Bridge v{BRIDGE_VERSION}*\n"
+                f"Active folder: `{folder_name}` (`{state['active_folder']}`)\n\n"
+                f"Send any message, image, or file to chat with {HARNESS_LABEL}.\n"
+                "Photos, documents, and voice messages are supported.\n"
+                "Session auto-continues the latest in current folder.\n\n"
+                "*Folder Commands:*\n"
+                "`/folders` \u2014 List project folders\n"
+                "`/folder <name>` \u2014 Switch folder\n"
+                "`/folder add <name> <path>` \u2014 Register folder\n"
+                "`/folder create <name> [path]` \u2014 Create new project\n"
+                "`/folder rm <name>` \u2014 Remove folder\n"
+                "`/clone <url> [name]` \u2014 Clone repo + switch\n"
+                "`/init` \u2014 Init current folder (git + CLAUDE.md)\n\n"
+                "*Session Commands:*\n"
+                "`/history [n]` \u2014 Last N messages from session\n"
+                "`/new [label]` \u2014 Fresh session in current folder\n"
+                "`/rename <label>` \u2014 Rename current session\n"
+                "`/save [label]` \u2014 Bookmark session\n"
+                "`/sessions` \u2014 List sessions for current folder\n"
+                "`/resume <id|name>` \u2014 Resume by ID or name\n"
+                "`/model [model-id|off]` \u2014 Show/set harness model override\n"
+                f"{agent_command}"
+                f"`/interrupt [msg]` \u2014 Stop {HARNESS_LABEL} mid-run; optional msg next\n\n"
+                "*Job Dispatch:*\n"
+                "`/dispatch [--node N] [--repo R] desc` \u2014 Create issue + launch worker\n"
+                "`/jobs` \u2014 List active dispatch jobs\n"
+                "`/job N` \u2014 Check job status (tmux + issue + output)\n"
+                "`/job-kill N` \u2014 Kill a running worker\n\n"
+                "`/watchdog` \u2014 Watchdog status\n"
+                "`/status` \u2014 Bridge status"
+            ),
+            reply_to=msg_id,
+        )
         return
 
     if cmd == "/folders":
@@ -1958,15 +2261,23 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 label = info.get("label", "")
                 if label:
                     session_info = f"\n  Last: _{label}_"
-            lines.append(f"`{name}` {has_git}{has_claude_md} `{path}`{active}{session_info}")
-        lines.append(f"\n`/folder <name>` to switch.\n`/folder add <name> <path>` to register.")
+            lines.append(
+                f"`{name}` {has_git}{has_claude_md} `{path}`{active}{session_info}"
+            )
+        lines.append(
+            f"\n`/folder <name>` to switch.\n`/folder add <name> <path>` to register."
+        )
         await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
         return
 
     if cmd == "/folder":
         if not arg:
             folder_name = get_folder_display_name(state["active_folder"])
-            await send_message(chat_id, f"Current folder: `{folder_name}` (`{state['active_folder']}`)\n\nUse `/folder <name>` to switch.", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Current folder: `{folder_name}` (`{state['active_folder']}`)\n\nUse `/folder <name>` to switch.",
+                reply_to=msg_id,
+            )
             return
 
         sub_parts = arg.split(maxsplit=2)
@@ -1977,20 +2288,32 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             name = sub_parts[1]
             path = os.path.expanduser(sub_parts[2])
             if not os.path.isdir(path):
-                await send_message(chat_id, f"Directory not found: `{path}`", reply_to=msg_id)
+                await send_message(
+                    chat_id, f"Directory not found: `{path}`", reply_to=msg_id
+                )
                 return
             state["folders"][name] = path
             save_state()
-            has_claude_md = " (CLAUDE.md found)" if Path(path, "CLAUDE.md").exists() else ""
+            has_claude_md = (
+                " (CLAUDE.md found)" if Path(path, "CLAUDE.md").exists() else ""
+            )
             has_git = " (git repo)" if Path(path, ".git").exists() else ""
-            await send_message(chat_id, f"Registered `{name}` \u2192 `{path}`{has_git}{has_claude_md}", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Registered `{name}` \u2192 `{path}`{has_git}{has_claude_md}",
+                reply_to=msg_id,
+            )
             return
 
         # /folder create <name> [path]
         if sub_cmd == "create" and len(sub_parts) >= 2:
             name = sub_parts[1]
             if name in state["folders"]:
-                await send_message(chat_id, f"Folder `{name}` already exists: `{state['folders'][name]}`", reply_to=msg_id)
+                await send_message(
+                    chat_id,
+                    f"Folder `{name}` already exists: `{state['folders'][name]}`",
+                    reply_to=msg_id,
+                )
                 return
             # Default path: ~/projects/<name>
             if len(sub_parts) >= 3:
@@ -2000,30 +2323,42 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             try:
                 os.makedirs(base, exist_ok=True)
             except OSError as e:
-                await send_message(chat_id, f"Failed to create directory: {e}", reply_to=msg_id)
+                await send_message(
+                    chat_id, f"Failed to create directory: {e}", reply_to=msg_id
+                )
                 return
             state["folders"][name] = base
             # Switch to the new folder
             if state["default_session_id"]:
-                state["folder_sessions"][state["active_folder"]] = state["default_session_id"]
+                state["folder_sessions"][state["active_folder"]] = state[
+                    "default_session_id"
+                ]
             state["active_folder"] = base
             state["default_session_id"] = None
             save_state()
-            await send_message(chat_id, (
-                f"Created `{name}` at `{base}`\n"
-                f"Switched to `{name}`.\n\n"
-                f"Use `/init` to set up git + CLAUDE.md, or just start chatting."
-            ), reply_to=msg_id)
+            await send_message(
+                chat_id,
+                (
+                    f"Created `{name}` at `{base}`\n"
+                    f"Switched to `{name}`.\n\n"
+                    f"Use `/init` to set up git + CLAUDE.md, or just start chatting."
+                ),
+                reply_to=msg_id,
+            )
             return
 
         # /folder rm <name>
         if sub_cmd == "rm" and len(sub_parts) >= 2:
             name = sub_parts[1]
             if name not in state["folders"]:
-                await send_message(chat_id, f"No folder named `{name}`", reply_to=msg_id)
+                await send_message(
+                    chat_id, f"No folder named `{name}`", reply_to=msg_id
+                )
                 return
             if name == "home":
-                await send_message(chat_id, "Can't remove `home` folder.", reply_to=msg_id)
+                await send_message(
+                    chat_id, "Can't remove `home` folder.", reply_to=msg_id
+                )
                 return
             removed_path = state["folders"].pop(name)
             if state["active_folder"] == removed_path:
@@ -2045,17 +2380,25 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 name = short
             else:
                 available = ", ".join(f"`{n}`" for n in sorted(state["folders"]))
-                await send_message(chat_id, f"Unknown folder `{name}`.\nAvailable: {available}", reply_to=msg_id)
+                await send_message(
+                    chat_id,
+                    f"Unknown folder `{name}`.\nAvailable: {available}",
+                    reply_to=msg_id,
+                )
                 return
 
         path = state["folders"][name]
         if not os.path.isdir(path):
-            await send_message(chat_id, f"Directory no longer exists: `{path}`", reply_to=msg_id)
+            await send_message(
+                chat_id, f"Directory no longer exists: `{path}`", reply_to=msg_id
+            )
             return
 
         # Save current session for current folder before switching
         if state["default_session_id"]:
-            state["folder_sessions"][state["active_folder"]] = state["default_session_id"]
+            state["folder_sessions"][state["active_folder"]] = state[
+                "default_session_id"
+            ]
 
         # Switch folder
         state["active_folder"] = path
@@ -2074,21 +2417,32 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             info = state["sessions"].get(sid, {})
             label = info.get("label", "")
             if not label:
-                cli_info = next((s for s in get_claude_sessions(path) if s["sessionId"] == sid), None)
+                cli_info = next(
+                    (s for s in get_harness_sessions(path) if s["sessionId"] == sid),
+                    None,
+                )
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
             session_msg = f"\nContinuing session `{sid[:8]}`"
             if label:
                 session_msg += f" (_{label}_)"
         else:
             session_msg = "\nNo previous session \u2014 next message starts fresh."
 
-        await send_message(chat_id, f"Switched to `{name}`{indicators}\n`{path}`{session_msg}", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            f"Switched to `{name}`{indicators}\n`{path}`{session_msg}",
+            reply_to=msg_id,
+        )
         return
 
     if cmd == "/clone":
         if not arg:
-            await send_message(chat_id, "Usage: `/clone <repo-url> [name]`\n\nExamples:\n`/clone https://github.com/user/repo`\n`/clone git@github.com:user/repo.git myproject`", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                "Usage: `/clone <repo-url> [name]`\n\nExamples:\n`/clone https://github.com/user/repo`\n`/clone git@github.com:user/repo.git myproject`",
+                reply_to=msg_id,
+            )
             return
 
         clone_parts = arg.split(maxsplit=1)
@@ -2103,20 +2457,33 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 name = name[:-4]
 
         if name in state["folders"]:
-            await send_message(chat_id, f"Folder `{name}` already exists: `{state['folders'][name]}`\nUse `/folder {name}` to switch, or provide a different name:\n`/clone {repo_url} other-name`", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Folder `{name}` already exists: `{state['folders'][name]}`\nUse `/folder {name}` to switch, or provide a different name:\n`/clone {repo_url} other-name`",
+                reply_to=msg_id,
+            )
             return
 
         clone_path = os.path.join(HOME, "projects", name)
         if os.path.exists(clone_path):
-            await send_message(chat_id, f"Path already exists: `{clone_path}`\nUse `/folder add {name} {clone_path}` to register it.", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Path already exists: `{clone_path}`\nUse `/folder add {name} {clone_path}` to register it.",
+                reply_to=msg_id,
+            )
             return
 
-        await send_message(chat_id, f"Cloning `{repo_url}` into `{clone_path}`...", reply_to=msg_id)
+        await send_message(
+            chat_id, f"Cloning `{repo_url}` into `{clone_path}`...", reply_to=msg_id
+        )
         await send_typing(chat_id)
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "clone", repo_url, clone_path,
+                "git",
+                "clone",
+                repo_url,
+                clone_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -2124,26 +2491,36 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
             if proc.returncode != 0:
                 err = stderr.decode("utf-8", errors="replace").strip()
-                await send_message(chat_id, f"Clone failed:\n`{err[:500]}`", reply_to=msg_id)
+                await send_message(
+                    chat_id, f"Clone failed:\n`{err[:500]}`", reply_to=msg_id
+                )
                 return
 
             # Register and switch
             state["folders"][name] = clone_path
             if state["default_session_id"]:
-                state["folder_sessions"][state["active_folder"]] = state["default_session_id"]
+                state["folder_sessions"][state["active_folder"]] = state[
+                    "default_session_id"
+                ]
             state["active_folder"] = clone_path
             state["default_session_id"] = None
             save_state()
 
-            has_claude_md = " (CLAUDE.md found)" if Path(clone_path, "CLAUDE.md").exists() else ""
+            has_claude_md = (
+                " (CLAUDE.md found)" if Path(clone_path, "CLAUDE.md").exists() else ""
+            )
             clone_output = stderr.decode("utf-8", errors="replace").strip()
 
-            await send_message(chat_id, (
-                f"Cloned and switched to `{name}`{has_claude_md}\n"
-                f"`{clone_path}`\n\n"
-                f"`{clone_output}`\n\n"
-                f"Ready. Send a message to start working."
-            ), reply_to=msg_id)
+            await send_message(
+                chat_id,
+                (
+                    f"Cloned and switched to `{name}`{has_claude_md}\n"
+                    f"`{clone_path}`\n\n"
+                    f"`{clone_output}`\n\n"
+                    f"Ready. Send a message to start working."
+                ),
+                reply_to=msg_id,
+            )
 
         except asyncio.TimeoutError:
             await send_message(chat_id, "Clone timed out after 120s.", reply_to=msg_id)
@@ -2160,8 +2537,11 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         if not Path(folder, ".git").exists():
             try:
                 proc = subprocess.run(
-                    ["git", "init"], cwd=folder,
-                    capture_output=True, text=True, timeout=10,
+                    ["git", "init"],
+                    cwd=folder,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if proc.returncode == 0:
                     results.append("git init: done")
@@ -2209,11 +2589,15 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             results.append(".gitignore: already exists")
 
         status = "\n".join(results)
-        await send_message(chat_id, (
-            f"Initialized `{folder_name}` (`{folder}`):\n\n"
-            f"{status}\n\n"
-            f"Ready to go. Send a message to start working."
-        ), reply_to=msg_id)
+        await send_message(
+            chat_id,
+            (
+                f"Initialized `{folder_name}` (`{folder}`):\n\n"
+                f"{status}\n\n"
+                f"Ready to go. Send a message to start working."
+            ),
+            reply_to=msg_id,
+        )
         return
 
     if cmd in ("/history", "/last"):
@@ -2228,12 +2612,16 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         # Use latest session for current folder
         sid = get_latest_session_id()
         if not sid:
-            await send_message(chat_id, "No sessions in current folder.", reply_to=msg_id)
+            await send_message(
+                chat_id, "No sessions in current folder.", reply_to=msg_id
+            )
             return
 
         messages = read_session_messages(sid, last_n=count)
         if not messages:
-            await send_message(chat_id, f"No messages found in session `{sid[:8]}`.", reply_to=msg_id)
+            await send_message(
+                chat_id, f"No messages found in session `{sid[:8]}`.", reply_to=msg_id
+            )
             return
 
         folder_name = get_folder_display_name(state["active_folder"])
@@ -2243,7 +2631,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             role = msg["role"]
             text = msg["text"]
             ts = msg.get("timestamp", "")[:16]  # trim to minutes
-            prefix = "You" if role == "user" else "Claude"
+            prefix = "You" if role == "user" else HARNESS_LABEL
 
             # Truncate long messages
             if len(text) > 500:
@@ -2284,7 +2672,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         else:
             state["sessions"][sid]["label"] = arg
             save_state()
-        await send_message(chat_id, f"Session `{sid[:8]}` renamed: _{arg}_", reply_to=msg_id)
+        await send_message(
+            chat_id, f"Session `{sid[:8]}` renamed: _{arg}_", reply_to=msg_id
+        )
         return
 
     if cmd == "/save":
@@ -2300,20 +2690,27 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         save_state()
         label = state["sessions"][sid].get("label", "")
         name = f" (_{label}_)" if label else ""
-        await send_message(chat_id, f"\U0001f4cc Session `{sid[:8]}`{name} bookmarked.", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            f"\U0001f4cc Session `{sid[:8]}`{name} bookmarked.",
+            reply_to=msg_id,
+        )
         return
 
     if cmd == "/sessions":
         folder = state["active_folder"]
         folder_name = get_folder_display_name(folder)
-        claude_sessions = get_claude_sessions()
+        harness_sessions = get_harness_sessions()
         seen = set()
         lines = [f"*Sessions in `{folder_name}`:*\n"]
 
         # Bridge-tracked sessions for this folder
         bridge_sessions = sorted(
-            [(sid, info) for sid, info in state["sessions"].items()
-             if info.get("folder", HOME) == folder],
+            [
+                (sid, info)
+                for sid, info in state["sessions"].items()
+                if info.get("folder", HOME) == folder
+            ],
             key=lambda x: x[1].get("last_used", ""),
             reverse=True,
         )
@@ -2325,10 +2722,12 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             saved = "\U0001f4cc " if info.get("saved") else ""
             active = " \u2190 active" if sid == state["default_session_id"] else ""
 
-            cli_info = next((s for s in claude_sessions if s["sessionId"] == sid), None)
+            cli_info = next(
+                (s for s in harness_sessions if s["sessionId"] == sid), None
+            )
             if cli_info:
                 if not label:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
                 msgs = max(msgs, cli_info.get("messageCount", 0))
 
             display = f"`{short}` {saved}{msgs} msgs{active}"
@@ -2336,19 +2735,17 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 display += f"\n  _{label}_"
             lines.append(display)
 
-        # Claude CLI sessions for this folder
-        for entry in claude_sessions:
+        # Harness CLI sessions for this folder
+        for entry in harness_sessions:
             sid = entry["sessionId"]
             if sid in seen:
                 continue
             seen.add(sid)
             short = sid[:8]
             msgs = entry.get("messageCount", 0)
-            summary = entry.get("summary", "")
-            first_prompt = entry.get("firstPrompt", "")[:40]
+            label = get_harness_session_label(entry)[:40]
             active = " \u2190 active" if sid == state.get("default_session_id") else ""
             display = f"`{short}` {msgs} msgs{active}"
-            label = summary or first_prompt
             if label:
                 display += f"\n  _{label}_"
             lines.append(display)
@@ -2356,7 +2753,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 break
 
         if len(lines) == 1:
-            await send_message(chat_id, f"No sessions in `{folder_name}` yet.", reply_to=msg_id)
+            await send_message(
+                chat_id, f"No sessions in `{folder_name}` yet.", reply_to=msg_id
+            )
             return
 
         lines.append(f"\n`/resume <id or name>` to switch.")
@@ -2365,7 +2764,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
     if cmd == "/resume":
         if not arg:
-            await send_message(chat_id, "Usage: `/resume <session-id or name>`", reply_to=msg_id)
+            await send_message(
+                chat_id, "Usage: `/resume <session-id or name>`", reply_to=msg_id
+            )
             return
         matches = find_session(arg)
         if len(matches) == 1:
@@ -2376,23 +2777,36 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             label = info.get("label", "")
             msgs = info.get("message_count", 0)
             if not label:
-                cli_info = next((s for s in get_claude_sessions() if s["sessionId"] == matches[0]), None)
+                cli_info = next(
+                    (s for s in get_harness_sessions() if s["sessionId"] == matches[0]),
+                    None,
+                )
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
                     msgs = cli_info.get("messageCount", 0)
             name = f" (_{label}_)" if label else ""
-            await send_message(chat_id, f"Resumed `{matches[0][:8]}`{name} \u2014 {msgs} msgs", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                f"Resumed `{matches[0][:8]}`{name} \u2014 {msgs} msgs",
+                reply_to=msg_id,
+            )
         elif len(matches) > 1:
             items = []
             for s in matches[:5]:
                 info = state["sessions"].get(s, {})
                 label = info.get("label", "")
                 if not label:
-                    cli_info = next((e for e in get_claude_sessions() if e["sessionId"] == s), None)
+                    cli_info = next(
+                        (e for e in get_harness_sessions() if e["sessionId"] == s), None
+                    )
                     if cli_info:
-                        label = cli_info.get("summary", "")
+                        label = get_harness_session_label(cli_info)
                 items.append(f"`{s[:8]}` _{label}_" if label else f"`{s[:8]}`")
-            await send_message(chat_id, "Multiple matches:\n" + "\n".join(items) + "\n\nBe more specific.", reply_to=msg_id)
+            await send_message(
+                chat_id,
+                "Multiple matches:\n" + "\n".join(items) + "\n\nBe more specific.",
+                reply_to=msg_id,
+            )
         else:
             await send_message(chat_id, f"No session matching `{arg}`", reply_to=msg_id)
         return
@@ -2403,56 +2817,133 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         folder = state["active_folder"]
         folder_name = get_folder_display_name(folder)
         n_sessions = len(state.get("sessions", {}))
-        n_cli = len(get_claude_sessions())
+        n_cli = len(get_harness_sessions())
         n_folders = len(state.get("folders", {}))
         saved_count = sum(1 for s in state["sessions"].values() if s.get("saved"))
         queue_size = _prompt_queue.qsize() if _prompt_queue else 0
-        busy = _active_claude_proc is not None and _active_claude_proc.returncode is None
+        busy = (
+            _active_harness_proc is not None and _active_harness_proc.returncode is None
+        )
         lines = [
             "*Bridge Status*",
+            f"Harness: `{HARNESS_LABEL}` (`{HARNESS_CLI}`)",
             f"Version: `{BRIDGE_VERSION}`",
             f"Build: `{BRIDGE_BUILD}`",
             f"Folder: `{folder_name}` (`{folder}`)",
             f"Folders: {n_folders} registered",
-            f"Sessions: {n_sessions} bridge + {n_cli} CLI ({saved_count} saved)",
+            f"Sessions: {n_sessions} bridge + {n_cli} external ({saved_count} saved)",
             f"Queue: {queue_size} pending | {'busy' if busy else 'idle'}",
             f"Timeout: {CLAUDE_TIMEOUT}s",
         ]
+        if BRIDGE_MODEL:
+            lines.append(f"Model override: `{BRIDGE_MODEL}`")
+        if HARNESS_AGENT:
+            lines.append(f"Agent profile: `{HARNESS_AGENT}`")
         if sid:
             lines.append(f"Active: `{sid[:8]}`")
             info = state["sessions"].get(sid, {})
             label = info.get("label", "")
             if not label:
-                cli_info = next((s for s in get_claude_sessions() if s["sessionId"] == sid), None)
+                cli_info = next(
+                    (s for s in get_harness_sessions() if s["sessionId"] == sid), None
+                )
                 if cli_info:
-                    label = cli_info.get("summary", "")
+                    label = get_harness_session_label(cli_info)
             if label:
                 lines.append(f"  _{label}_")
         else:
             lines.append("Active session: none (will auto-continue)")
         if inv:
-            lines.append(f"Last: {inv.get('elapsed', '?')}s at {inv.get('time', '?')[:16]}")
+            lines.append(
+                f"Last: {inv.get('elapsed', '?')}s at {inv.get('time', '?')[:16]}"
+            )
         await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
         return
 
     if cmd == "/model":
-        global BRIDGE_MODEL
         if not arg:
-            await send_message(chat_id, (
-                f"*Bridge model:* `{BRIDGE_MODEL}`\n\n"
-                "*Available models:*\n"
-                "`glm-5.1:cloud` — GLM 5.1 Cloud (Ollama)\n"
-                "`claude-opus-4-6` — Most capable\n"
-                "`claude-sonnet-4-5-20250929` — Fast + capable\n"
-                "`claude-haiku-4-5-20251001` — Fastest + cheapest\n\n"
-                "Usage: `/model <model-id>`\n"
-                "Sets BRIDGE\\_MODEL env var for this session."
-            ), reply_to=msg_id)
+            current = BRIDGE_MODEL or "default"
+            lines = [
+                f"*{HARNESS_LABEL} model override:* `{current}`",
+                "",
+            ]
+            if HARNESS_CLI == "claude":
+                lines.extend(
+                    [
+                        "*Common Claude models:*",
+                        "`claude-opus-4-6` — Most capable",
+                        "`claude-sonnet-4-5-20250929` — Fast + capable",
+                        "`claude-haiku-4-5-20251001` — Fastest + cheapest",
+                        "",
+                        "Applied via `ANTHROPIC_MODEL`/`BRIDGE_MODEL` for the next run.",
+                    ]
+                )
+            else:
+                lines.append(f"Applied as `-m <model>` to `{HARNESS_CLI} run`.")
+                if HARNESS_AGENT:
+                    lines.append(f"Current agent profile: `{HARNESS_AGENT}`")
+            lines.extend(
+                [
+                    "",
+                    "Usage: `/model <model-id>`",
+                    "Clear override: `/model off`",
+                ]
+            )
+            await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
             return
-        # Set model
         model = arg.strip()
+        if model.lower() in {"off", "default", "clear", "none"}:
+            BRIDGE_MODEL = ""
+            await send_message(
+                chat_id, f"{HARNESS_LABEL} model override cleared.", reply_to=msg_id
+            )
+            return
         BRIDGE_MODEL = model
-        await send_message(chat_id, f"Bridge model set to `{model}` (next prompt)", reply_to=msg_id)
+        applied_as = (
+            "ANTHROPIC_MODEL/BRIDGE_MODEL"
+            if HARNESS_CLI == "claude"
+            else f"{HARNESS_CLI} run -m"
+        )
+        await send_message(
+            chat_id,
+            f"{HARNESS_LABEL} model set to `{model}` for the next run via `{applied_as}`.",
+            reply_to=msg_id,
+        )
+        return
+
+    if cmd == "/agent":
+        if HARNESS_CLI not in {"opencode", "kilo"}:
+            await send_message(
+                chat_id,
+                f"`/agent` is not supported for `{HARNESS_CLI}`.",
+                reply_to=msg_id,
+            )
+            return
+        if not arg:
+            current = HARNESS_AGENT or "default"
+            await send_message(
+                chat_id,
+                (
+                    f"*{HARNESS_LABEL} agent profile:* `{current}`\n\n"
+                    "Usage: `/agent <name>`\n"
+                    "Clear override: `/agent off`"
+                ),
+                reply_to=msg_id,
+            )
+            return
+        agent = arg.strip()
+        if agent.lower() in {"off", "default", "clear", "none"}:
+            HARNESS_AGENT = ""
+            await send_message(
+                chat_id, f"{HARNESS_LABEL} agent profile cleared.", reply_to=msg_id
+            )
+            return
+        HARNESS_AGENT = agent
+        await send_message(
+            chat_id,
+            f"{HARNESS_LABEL} agent profile set to `{agent}` for the next run.",
+            reply_to=msg_id,
+        )
         return
 
     if cmd == "/watchdog":
@@ -2470,9 +2961,14 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 f"Eval node: `{WATCHDOG_EVAL_NODE}`"
             )
         else:
-            busy = _active_claude_proc is not None and _active_claude_proc.returncode is None
+            busy = (
+                _active_harness_proc is not None
+                and _active_harness_proc.returncode is None
+            )
             queue_size = _prompt_queue.qsize() if _prompt_queue else 0
-            worker_alive = _queue_worker_task is not None and not _queue_worker_task.done()
+            worker_alive = (
+                _queue_worker_task is not None and not _queue_worker_task.done()
+            )
             status_text = (
                 f"Watchdog: *{'monitoring' if busy else 'idle'}*\n"
                 f"Bash timeout: {WATCHDOG_BASH_TIMEOUT}s\n"
@@ -2488,7 +2984,11 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         return
 
     if cmd == "/compact":
-        await send_message(chat_id, "Starting fresh session (compact not available in bridge mode).", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            "Starting fresh session (compact not available in bridge mode).",
+            reply_to=msg_id,
+        )
         state["default_session_id"] = None
         state["folder_sessions"].pop(state["active_folder"], None)
         save_state()
@@ -2515,12 +3015,16 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         return
 
     if cmd == "/dashboard":
-        await send_message(chat_id, (
-            "Portfolio Dashboard:\n"
-            "http://100.121.48.86:3100/stats\n\n"
-            "Live P&L, backtest metrics, pair performance.\n"
-            "Tailscale VPN required."
-        ), reply_to=msg_id)
+        await send_message(
+            chat_id,
+            (
+                "Portfolio Dashboard:\n"
+                "http://100.121.48.86:3100/stats\n\n"
+                "Live P&L, backtest metrics, pair performance.\n"
+                "Tailscale VPN required."
+            ),
+            reply_to=msg_id,
+        )
         return
 
     # Unknown command — treat as prompt
@@ -2528,14 +3032,14 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
 
 async def cmd_interrupt(chat_id: int, msg_id: int, args: str):
-    """Interrupt the currently running Claude process."""
-    if _active_claude_proc is None:
+    """Interrupt the currently running harness process."""
+    if _active_harness_proc is None:
         await send_message(chat_id, "Nothing running to interrupt.", reply_to=msg_id)
         return
 
     await send_message(chat_id, "_Interrupting..._", reply_to=msg_id)
     try:
-        _active_claude_proc.send_signal(signal.SIGINT)
+        _active_harness_proc.send_signal(signal.SIGINT)
     except ProcessLookupError:
         pass  # Already exited
 
@@ -2548,7 +3052,9 @@ async def cmd_interrupt(chat_id: int, msg_id: int, args: str):
         log.info("Interrupt requested (no follow-up)")
 
 
-async def enqueue_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target: str | None = None):
+async def enqueue_prompt(
+    chat_id: int, msg_id: int, text: str, a2a_reply_target: str | None = None
+):
     """Add a prompt to the queue. Notifies user of queue position if not first."""
     global _prompt_queue
     if _prompt_queue is None:
@@ -2558,7 +3064,11 @@ async def enqueue_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target:
     await _prompt_queue.put((chat_id, msg_id, text, a2a_reply_target))
 
     if queue_size > 0:
-        await send_message(chat_id, f"Queued (position {queue_size + 1}). Working on previous task...", reply_to=msg_id)
+        await send_message(
+            chat_id,
+            f"Queued (position {queue_size + 1}). Working on previous task...",
+            reply_to=msg_id,
+        )
         log.info(f"Queued message (position {queue_size + 1}): {text[:60]}")
     else:
         log.info(f"Processing immediately: {text[:60]}")
@@ -2586,7 +3096,9 @@ async def queue_worker():
             await _process_prompt(chat_id, msg_id, text, a2a_reply_target)
         except Exception as e:
             log.error(f"Queue worker error: {e}")
-            await send_message(chat_id, f"Error processing message: {e}", reply_to=msg_id)
+            await send_message(
+                chat_id, f"Error processing message: {e}", reply_to=msg_id
+            )
         finally:
             _prompt_queue.task_done()
 
@@ -2610,13 +3122,9 @@ async def _queue_health_monitor():
             continue
 
         # Queue has items — check if worker is alive and processing
-        worker_alive = (
-            _queue_worker_task is not None
-            and not _queue_worker_task.done()
-        )
+        worker_alive = _queue_worker_task is not None and not _queue_worker_task.done()
         claude_active = (
-            _active_claude_proc is not None
-            and _active_claude_proc.returncode is None
+            _active_harness_proc is not None and _active_harness_proc.returncode is None
         )
 
         # If Claude is actively running, worker is just waiting for it — not stalled
@@ -2624,7 +3132,11 @@ async def _queue_health_monitor():
             continue
 
         # Check stall: queue has items, no active Claude, no recent dequeue
-        time_since_dequeue = time.time() - _queue_last_dequeue if _queue_last_dequeue > 0 else float("inf")
+        time_since_dequeue = (
+            time.time() - _queue_last_dequeue
+            if _queue_last_dequeue > 0
+            else float("inf")
+        )
 
         if time_since_dequeue < STALL_THRESHOLD:
             continue
@@ -2637,7 +3149,9 @@ async def _queue_health_monitor():
         )
 
         # Try to notify the user
-        chat_id = _active_claude_chat_id or int(os.environ.get("ALLOWED_USER_IDS", "0").split(",")[0])
+        chat_id = _active_harness_chat_id or int(
+            os.environ.get("ALLOWED_USER_IDS", "0").split(",")[0]
+        )
         if chat_id:
             await send_message(
                 chat_id,
@@ -2657,10 +3171,12 @@ async def _queue_health_monitor():
         log.info("Queue health: worker restarted")
 
 
-async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target: str | None = None):
-    """Send prompt to Claude and respond. Called sequentially by queue worker."""
-    global _active_claude_chat_id, _watchdog_current_tool, _watchdog_last_progress
-    _active_claude_chat_id = chat_id
+async def _process_prompt(
+    chat_id: int, msg_id: int, text: str, a2a_reply_target: str | None = None
+):
+    """Send prompt to the harness and respond. Called sequentially by queue worker."""
+    global _active_harness_chat_id, _watchdog_current_tool, _watchdog_last_progress
+    _active_harness_chat_id = chat_id
     _watchdog_current_tool = None
     _watchdog_last_progress = time.time()
 
@@ -2687,7 +3203,7 @@ async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target
                 ),
                 reply_to=msg_id,
             )
-        response, session_id = await run_claude(
+        response, session_id = await run_harness(
             text,
             chat_id,
             suppress_progress_messages=bool(a2a_reply_target),
@@ -2697,7 +3213,9 @@ async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target
 
         if session_id:
             pending = state.pop("_pending_label", None)
-            label = pending or (text[:50] if session_id != state.get("default_session_id") else "")
+            label = pending or (
+                text[:50] if session_id != state.get("default_session_id") else ""
+            )
             record_session(session_id, label=label)
             state["default_session_id"] = session_id
             save_state()
@@ -2716,16 +3234,20 @@ async def _process_prompt(chat_id: int, msg_id: int, text: str, a2a_reply_target
         if a2a_reply_target:
             ok, reason = _validate_handoff_envelope(response, a2a_reply_target)
             if not ok:
-                log.warning(f"Rejected invalid A2A response to @{a2a_reply_target}: {reason}")
+                log.warning(
+                    f"Rejected invalid A2A response to @{a2a_reply_target}: {reason}"
+                )
                 response = _a2a_response_rejection(a2a_reply_target, reason)
-        log.info(f"Response ({elapsed:.1f}s, {len(response)} chars, session={session_id}{queue_note})")
+        log.info(
+            f"Response ({elapsed:.1f}s, {len(response)} chars, session={session_id}{queue_note})"
+        )
         if a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
         else:
             await send_message(chat_id, response, reply_to=msg_id)
 
     finally:
-        _active_claude_chat_id = None
+        _active_harness_chat_id = None
         _watchdog_current_tool = None
         typing_task.cancel()
         if watchdog_task:
@@ -2758,6 +3280,7 @@ async def typing_loop(chat_id: int):
 
 # --- Long-Polling Loop ---
 
+
 async def poll_loop():
     """Main Telegram long-polling loop."""
     global BOT_USERNAME, BOT_ID
@@ -2778,11 +3301,14 @@ async def poll_loop():
         try:
             client = await get_client()
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            resp = await client.post(url, json={
-                "offset": offset,
-                "timeout": POLL_TIMEOUT,
-                "allowed_updates": ["message"],
-            })
+            resp = await client.post(
+                url,
+                json={
+                    "offset": offset,
+                    "timeout": POLL_TIMEOUT,
+                    "allowed_updates": ["message"],
+                },
+            )
             data = resp.json()
 
             if not data.get("ok"):
@@ -2807,27 +3333,49 @@ async def poll_loop():
                 if not chat_id:
                     continue
 
-                should_process, text, caption, auto_reply = should_process_group_message(message, text, caption)
+                should_process, text, caption, auto_reply = (
+                    should_process_group_message(message, text, caption)
+                )
                 if auto_reply:
-                    asyncio.create_task(send_message(chat_id, auto_reply, reply_to=msg_id))
+                    asyncio.create_task(
+                        send_message(chat_id, auto_reply, reply_to=msg_id)
+                    )
                 if not should_process:
                     continue
 
                 # Check for media (photos, documents, voice, etc.)
-                has_media = any(k in message for k in ("photo", "document", "voice", "video_note", "video", "sticker"))
+                has_media = any(
+                    k in message
+                    for k in (
+                        "photo",
+                        "document",
+                        "voice",
+                        "video_note",
+                        "video",
+                        "sticker",
+                    )
+                )
 
                 if not text and not caption and not has_media:
                     continue
 
-                log.info(f"Message from {user_id}: {(text or caption or '[media]')[:80]}")
+                log.info(
+                    f"Message from {user_id}: {(text or caption or '[media]')[:80]}"
+                )
 
                 if text and text.startswith("/"):
                     asyncio.create_task(handle_command(chat_id, msg_id, text))
                 elif has_media:
-                    asyncio.create_task(handle_media_message(chat_id, msg_id, message, caption or text or ""))
+                    asyncio.create_task(
+                        handle_media_message(
+                            chat_id, msg_id, message, caption or text or ""
+                        )
+                    )
                 else:
                     a2a_reply_target = None
-                    if from_user.get("is_bot") and raw_text.lower().startswith("/handoff@"):
+                    if from_user.get("is_bot") and raw_text.lower().startswith(
+                        "/handoff@"
+                    ):
                         a2a_reply_target = from_user.get("username") or None
                     asyncio.create_task(
                         enqueue_prompt(
@@ -2849,12 +3397,17 @@ async def poll_loop():
 
 # --- Orphan Recovery ---
 
-async def recover_orphaned_claude():
-    """On startup, check for orphaned Claude processes and notify user."""
+
+async def recover_orphaned_harness():
+    """On startup, check for orphaned harness processes and notify user."""
+    if HARNESS_CLI != "claude":
+        return
     try:
         # Find any running claude --print processes
         proc = await asyncio.create_subprocess_exec(
-            "pgrep", "-af", "claude.*--print",
+            "pgrep",
+            "-af",
+            "claude.*--print",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -2873,17 +3426,23 @@ async def recover_orphaned_claude():
                 orphans.append((pid, cmd))
 
         if orphans:
-            log.info(f"Found {len(orphans)} orphaned Claude process(es)")
+            log.info(f"Found {len(orphans)} orphaned {HARNESS_LABEL} process(es)")
             # Wait for orphans to finish (they're already running)
             for pid, cmd in orphans:
                 log.info(f"Waiting for orphan PID {pid}: {cmd[:80]}")
                 try:
                     wait_proc = await asyncio.create_subprocess_exec(
-                        "tail", "--pid", pid, "-f", "/dev/null",
+                        "tail",
+                        "--pid",
+                        pid,
+                        "-f",
+                        "/dev/null",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
-                    await asyncio.wait_for(wait_proc.communicate(), timeout=CLAUDE_TIMEOUT)
+                    await asyncio.wait_for(
+                        wait_proc.communicate(), timeout=CLAUDE_TIMEOUT
+                    )
                     log.info(f"Orphan PID {pid} finished")
                 except asyncio.TimeoutError:
                     log.warning(f"Orphan PID {pid} still running after timeout")
@@ -2892,21 +3451,27 @@ async def recover_orphaned_claude():
 
             # Notify user that bridge restarted with orphan info
             chat_id = next(iter(ALLOWED_USERS))
-            await send_message(chat_id, (
-                "Bridge restarted. "
-                f"Found {len(orphans)} orphaned Claude process(es) from before restart — "
-                "they finished running. Use `/sessions` to see latest state, "
-                "or `/resume` to continue where you left off."
-            ))
+            await send_message(
+                chat_id,
+                (
+                    "Bridge restarted. "
+                    f"Found {len(orphans)} orphaned {HARNESS_LABEL} process(es) from before restart — "
+                    "they finished running. Use `/sessions` to see latest state, "
+                    "or `/resume` to continue where you left off."
+                ),
+            )
         else:
             # No orphans, but check if last invocation looks incomplete
             last = state.get("last_invocation")
             if last and last.get("session_id") is None and last.get("status") == "ok":
                 chat_id = next(iter(ALLOWED_USERS))
-                await send_message(chat_id, (
-                    "Bridge restarted. Last Claude call may not have been delivered. "
-                    "Use `--continue` or `/resume` to pick up where you left off."
-                ))
+                await send_message(
+                    chat_id,
+                    (
+                        f"Bridge restarted. Last {HARNESS_LABEL} call may not have been delivered. "
+                        "Use `--continue` or `/resume` to pick up where you left off."
+                    ),
+                )
 
     except Exception as e:
         log.warning(f"Orphan recovery check failed: {e}")
@@ -2916,7 +3481,7 @@ async def recover_orphaned_claude():
 
 from fastapi import FastAPI
 
-app = FastAPI(title="Claude-Telegram Bridge", version=BRIDGE_VERSION)
+app = FastAPI(title=f"{HARNESS_LABEL}-Telegram Bridge", version=BRIDGE_VERSION)
 
 
 @app.on_event("startup")
@@ -2940,7 +3505,7 @@ async def startup():
                     name = d.name
                     if name not in state["folders"]:
                         state["folders"][name] = str(d)
-    # Check for orphaned Claude processes from a previous crash
+    # Check for orphaned harness processes from a previous crash
     asyncio.create_task(recover_orphaned_claude())
 
     save_state()
@@ -2960,16 +3525,19 @@ async def shutdown():
     log.info("Shutdown signal received")
 
     # If Claude is running, wait for it to finish instead of killing it
-    if _active_claude_proc and _active_claude_proc.returncode is None:
-        log.info("Waiting for active Claude process to finish...")
-        if _active_claude_chat_id:
-            await send_message(_active_claude_chat_id, "_Bridge restarting — waiting for Claude to finish..._")
+    if _active_harness_proc and _active_harness_proc.returncode is None:
+        log.info(f"Waiting for active {HARNESS_LABEL} process to finish...")
+        if _active_harness_chat_id:
+            await send_message(
+                _active_harness_chat_id,
+                f"_Bridge restarting — waiting for {HARNESS_LABEL} to finish..._",
+            )
         try:
-            await asyncio.wait_for(_active_claude_proc.wait(), timeout=CLAUDE_TIMEOUT)
-            log.info("Claude process finished before shutdown")
+            await asyncio.wait_for(_active_harness_proc.wait(), timeout=CLAUDE_TIMEOUT)
+            log.info(f"{HARNESS_LABEL} process finished before shutdown")
         except asyncio.TimeoutError:
-            log.warning("Claude still running at shutdown timeout, terminating")
-            _active_claude_proc.terminate()
+            log.warning(f"{HARNESS_LABEL} still running at shutdown timeout, terminating")
+            _active_harness_proc.terminate()
 
     save_state()
     log.info("Shutdown complete")
@@ -2980,7 +3548,9 @@ async def health():
     sid = state.get("default_session_id")
     return {
         "status": "ok",
-        "service": "claude-telegram-bridge",
+        "service": HARNESS_SERVICE_NAME,
+        "harness_cli": HARNESS_CLI,
+        "harness_label": HARNESS_LABEL,
         "version": BRIDGE_VERSION,
         "build": BRIDGE_BUILD,
         "mode": "long-polling",
@@ -2988,7 +3558,9 @@ async def health():
         "folder_count": len(state.get("folders", {})),
         "default_session": sid[:8] if sid else None,
         "session_count": len(state.get("sessions", {})),
-        "cli_session_count": len(get_claude_sessions()),
+        "cli_session_count": len(get_harness_sessions()),
+        "model_override": BRIDGE_MODEL or None,
+        "agent_profile": HARNESS_AGENT or None,
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
