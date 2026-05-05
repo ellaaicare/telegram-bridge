@@ -366,16 +366,63 @@ def _a2a_skill_reference() -> str:
     )
 
 
+def _a2a_envelope_json_compact(payload: dict) -> str:
+    """Compact JSON for transmission (minimizes Telegram message length)."""
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _a2a_envelope_json_pretty(payload: dict) -> str:
+    """Pretty-printed JSON for human visibility in Telegram group chats."""
+    return json.dumps(payload, indent=2)
+
+
 def _a2a_guidance_message() -> str:
+    """A2A handoff syntax guidance with pretty-printed JSON for readability."""
     target = _canonical_handoff_target(BOT_USERNAME)
+    payload = {
+        "from": "SourceBot",
+        "to": target,
+        "task_id": "stable-unique-id",
+        "ttl": 1,
+        "requires_response": True,
+        "type": "task",
+        "body": "Do the work here.",
+    }
     return (
         "A2A handoff syntax required for bot-to-bot work.\n\n"
         f"Send tasks with this exact shape:\n/handoff@{target} "
-        f'{{"from":"SourceBot","to":"{target}","task_id":"stable-unique-id",'
-        '"ttl":1,"requires_response":true,"type":"task","body":"Do the work here."}\n\n'
+        f"{_a2a_envelope_json_pretty(payload)}\n\n"
         f"Known targets: {_known_target_examples()}\n\n"
         "Rules: use ttl=1, use a unique task_id, put the actual request in body, "
         "and do not send raw @bot prose or standing-by chatter.\n\n"
+        f"{_a2a_skill_reference()}"
+    )
+
+
+def _a2a_response_rejection(target_username: str, reason: str) -> str:
+    """A2A response rejection with pretty-printed JSON for readability."""
+    target = _canonical_handoff_target(target_username)
+    source = BOT_USERNAME or "BridgeBot"
+    payload = {
+        "from": source,
+        "to": target,
+        "task_id": "stable-unique-id",
+        "ttl": 1,
+        "requires_response": False,
+        "type": "result",
+        "body": "Result text here.",
+    }
+    return (
+        "A2A handoff syntax required for bot-to-bot work.\n\n"
+        "The local agent generated an invalid bot-to-bot response, so the bridge "
+        "rejected the raw response instead of posting it.\n\n"
+        f"Reason: {reason}\n\n"
+        f"Reply with this exact shape:\n/handoff@{target} "
+        f"{_a2a_envelope_json_pretty(payload)}\n\n"
+        f"Known targets: {_known_target_examples()}\n\n"
+        "Rules: structured envelopes are required for A2A responses too; use ttl=1 "
+        "or ttl=0 for terminal results, use a unique task_id, and put the response "
+        "content in body.\n\n"
         f"{_a2a_skill_reference()}"
     )
 
@@ -448,15 +495,25 @@ def _validate_handoff_envelope(raw: str, target_username: str) -> tuple[bool, st
 
 
 def _a2a_response_rejection(target_username: str, reason: str) -> str:
+    """A2A response rejection with pretty-printed JSON for readability."""
     target = _canonical_handoff_target(target_username)
+    source = BOT_USERNAME or "BridgeBot"
+    payload = {
+        "from": source,
+        "to": target,
+        "task_id": "stable-unique-id",
+        "ttl": 1,
+        "requires_response": False,
+        "type": "result",
+        "body": "Result text here.",
+    }
     return (
         "A2A handoff syntax required for bot-to-bot work.\n\n"
         "The local agent generated an invalid bot-to-bot response, so the bridge "
         "rejected the raw response instead of posting it.\n\n"
         f"Reason: {reason}\n\n"
         f"Reply with this exact shape:\n/handoff@{target} "
-        f'{{"from":"SourceBot","to":"{target}","task_id":"stable-unique-id",'
-        '"ttl":1,"requires_response":false,"type":"result","body":"Result text here."}\n\n'
+        f"{_a2a_envelope_json_pretty(payload)}\n\n"
         f"Known targets: {_known_target_examples()}\n\n"
         "Rules: structured envelopes are required for A2A responses too; use ttl=1 "
         "or ttl=0 for terminal results, use a unique task_id, and put the response "
@@ -482,7 +539,7 @@ def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
         "type": "status",
         "body": body,
     }
-    return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
+    return f"/handoff@{target} {json.dumps(payload, indent=2)}"
 
 
 def should_process_group_message(
