@@ -122,26 +122,30 @@ restart_bridge() {
         done
       ;;
     launchd)
-      local plist_label="com.ella.${bridge//-/.}"
+      # Find the plist by grepping for the bridge's WorkingDirectory path,
+      # since plist labels vary (e.g. com.ella.claude-bridge vs com.ella.claude.telegram.bridge).
+      local svc_path="${base}/services/${bridge}"
       run_on "${ssh_target}" "
-        uid=\$(id -u ${user})
-        if launchctl print gui/\${uid}/${plist_label} >/dev/null 2>&1; then
-          plist_path=\$(find /Users/${user}/Library/LaunchAgents -name '${plist_label}.plist' 2>/dev/null | head -1)
-          if [[ -n \"\${plist_path}\" ]]; then
-            launchctl bootout gui/\${uid} \"\${plist_path}\" 2>/dev/null || true
-            launchctl bootstrap gui/\${uid} \"\${plist_path}\"
-            echo ok
-          else
-            echo no-plist
-          fi
-        else
-          echo not-registered
+        uid=\$(id -u)
+        plist_path=\$(grep -rl '${svc_path}' /Users/${user}/Library/LaunchAgents/*.plist 2>/dev/null | head -1)
+        if [[ -z \"\${plist_path}\" ]]; then
+          echo no-plist
+          exit 0
         fi
+        label=\$(defaults read \"\${plist_path}\" Label 2>/dev/null)
+        if [[ -z \"\${label}\" ]]; then
+          echo no-label
+          exit 0
+        fi
+        launchctl bootout gui/\${uid} \"\${plist_path}\" 2>/dev/null || true
+        sleep 1
+        launchctl bootstrap gui/\${uid} \"\${plist_path}\"
+        echo \"ok \${label}\"
       " | while read -r line; do
           case "${line}" in
-            ok) log "  restarted ${bridge} (launchd)" ;;
-            no-plist) warn "  ${bridge}: plist not found on ${ssh_target}" ;;
-            not-registered) warn "  ${bridge} not registered in launchd on ${ssh_target}" ;;
+            ok*) log "  restarted ${bridge} (launchd: ${line#ok })" ;;
+            no-plist) warn "  ${bridge}: no plist found referencing ${svc_path}" ;;
+            no-label) warn "  ${bridge}: plist found but no Label key" ;;
           esac
         done
       ;;

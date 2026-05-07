@@ -4,9 +4,12 @@ Standalone home for Ella's Telegram agent bridges.
 
 This repository contains:
 
+- `services/claude-telegram-bridge`: Telegram bridge for Claude Code CLI (also used as HARNESS for kilo/opencode).
 - `services/codex-telegram-bridge`: Telegram bridge for the Codex CLI.
-- `services/claude-telegram-bridge`: Telegram bridge for the Claude Code CLI.
-- `services/telegram-a2a/agents.json`: shared A2A bot registry.
+- `services/kilo-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=kilo`.
+- `services/opencode-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=opencode`.
+- `services/telegram-a2a/agents.json`: shared A2A bot registry (example — live registry at `~/.config/telegram-bridge/agents.json`).
+- `scripts/deploy-fleet.sh`: Fleet-wide deploy orchestrator.
 - `skills/telegram-a2a-handoff/SKILL.md`: A2A handoff protocol guidance.
 - `docs/runbooks/telegram-a2a-handoff.md`: operator runbook for bridge handoffs.
 - `tests/`: bridge regression tests.
@@ -32,19 +35,47 @@ python3 -m pytest \
 
 ## Deploy
 
-From a host checkout:
+### Fleet-wide (recommended)
+
+Update all bridges on all fleet nodes in one command:
 
 ```bash
-cd services/codex-telegram-bridge
-./deploy-fleet.sh
+./scripts/deploy-fleet.sh              # Pull + pip install + restart on all nodes
+./scripts/deploy-fleet.sh --dry-run    # Preview what would happen
+./scripts/deploy-fleet.sh --no-restart # Pull + deps only, skip service restart
+./scripts/deploy-fleet.sh --node imac  # Target a single node
+./scripts/deploy-fleet.sh --bridge claude  # Target a single bridge type everywhere
+./scripts/deploy-fleet.sh --list       # Show fleet inventory
 ```
 
-For Claude Code:
+The script handles git pull (with stash for dirty trees), venv/pip, and service
+restarts across systemd-user (Linux) and launchd (macOS).
+
+### Fleet inventory
+
+| Node | SSH | OS | Bridges | Service Manager |
+|------|-----|----|---------|-----------------|
+| imac | (local) | Linux | claude, kilo, opencode | `systemctl --user` |
+| macbookair | admin-macbookair1 | Linux | codex, claude | `systemctl --user` |
+| macmini | ellaai@100.76.138.56 | macOS | claude, codex, kilo, opencode | `launchctl` |
+
+### Single-host deploy
+
+Each service also has a local `deploy-fleet.sh` for deploying on the current machine only:
 
 ```bash
 cd services/claude-telegram-bridge
-./deploy-fleet.sh
+./deploy-fleet.sh                  # git pull + pip + restart
+./deploy-fleet.sh --install-service  # First time: create systemd/launchd service
+./deploy-fleet.sh --no-pull        # Skip git pull (for manually synced dirs)
 ```
 
-Use `--install-service` the first time on a host, or `--no-pull` when service files
-were already synced into a live directory.
+### A2A bot registry
+
+The live bot registry with real bot IDs lives at `~/.config/telegram-bridge/agents.json`
+on each node. The file at `services/telegram-a2a/agents.json` is an **example template**
+with placeholder IDs. Each bridge's `.env` must set:
+
+```
+A2A_BOT_REGISTRY_PATH=/path/to/.config/telegram-bridge/agents.json
+```
