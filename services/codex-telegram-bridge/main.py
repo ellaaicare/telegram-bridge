@@ -419,6 +419,30 @@ def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
     return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
 
 
+def _a2a_autowrap_result(
+    target_username: str, task_id: str, body: str
+) -> str:
+    """Wrap a raw agent response in a valid A2A result envelope.
+
+    When the agent produces plain text instead of a structured /handoff
+    envelope, the bridge auto-wraps it so the requester still receives
+    a valid A2A result.  The ttl is 0 (terminal) and requires_response
+    is False — the requester can decide whether to follow up.
+    """
+    target = _canonical_handoff_target(target_username)
+    source = BOT_USERNAME or "BridgeBot"
+    payload = {
+        "from": source,
+        "to": target,
+        "task_id": task_id,
+        "ttl": 0,
+        "requires_response": False,
+        "type": "result",
+        "body": body,
+    }
+    return f"/handoff@{target} {json.dumps(payload, indent=2)}"
+
+
 def should_process_group_message(message: dict, text: str, caption: str) -> tuple[bool, str, str, str | None]:
     """Return whether a message should run, sanitized content, and optional bridge reply."""
     chat = message.get("chat") or {}
@@ -1701,8 +1725,18 @@ async def _process_prompt(item: dict):
         if a2a_reply_target:
             ok, reason = _validate_handoff_envelope(response, a2a_reply_target)
             if not ok:
-                log.warning("Rejected invalid A2A response to @%s: %s", a2a_reply_target, reason)
-                response = _a2a_response_rejection(a2a_reply_target, reason)
+                # Agent produced raw text instead of a /handoff envelope.
+                # Auto-wrap it into a valid A2A result so the requester
+                # still receives the work product (see issue #6).
+                task_id = _extract_a2a_task_id(text)
+                response = _a2a_autowrap_result(
+                    a2a_reply_target, task_id, response
+                )
+                log.info(
+                    "Auto-wrapped raw A2A response to @%s (reason: %s)",
+                    a2a_reply_target,
+                    reason,
+                )
         if a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
         else:
