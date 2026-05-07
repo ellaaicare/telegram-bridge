@@ -573,3 +573,41 @@ def test_rejects_non_handoff_from_unregistered_bot():
 
     assert should_process is False
     assert auto_reply is None
+
+
+def test_invalid_a2a_response_is_autowrapped():
+    """When Claude produces a raw-text response to an A2A task (not a valid
+    /handoff envelope), the bridge must auto-wrap it in a structured result
+    envelope so the requester still receives the work product.  It must NOT
+    post rejection text like 'A2A response invalid: ...' which triggers
+    guidance cascades (issue #6)."""
+    bridge = load_bridge_module()
+
+    # Simulate Claude returning raw text instead of a /handoff envelope
+    raw_response = "Here is my analysis of the codebase."
+    ok, reason = bridge._validate_handoff_envelope(raw_response, "EllaCodexBot")
+    assert ok is False
+    assert "response must start with /handoff@EllaCodexBot" in reason
+
+    # Auto-wrap produces a valid envelope with the raw text as body
+    wrapped = bridge._a2a_autowrap_result("EllaCodexBot", "task-123", raw_response)
+    assert wrapped.startswith("/handoff@EllaCodexBot ")
+
+    # The wrapped response must itself pass validation
+    ok2, reason2 = bridge._validate_handoff_envelope(wrapped, "EllaCodexBot")
+    assert ok2 is True, f"Auto-wrapped response failed validation: {reason2}"
+
+    # Verify the body is preserved
+    import json
+    json_text = wrapped.split(" ", 1)[1]
+    payload = json.loads(json_text)
+    assert payload["body"] == raw_response
+    assert payload["type"] == "result"
+    assert payload["ttl"] == 0
+    assert payload["requires_response"] is False
+    assert payload["task_id"] == "task-123"
+
+    # Verify no rejection text is sent to the group (old bug)
+    import inspect
+    source = inspect.getsource(bridge._process_prompt)
+    assert 'f"_A2A response invalid' not in source
