@@ -454,21 +454,26 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
 
     if chat_type in {"group", "supergroup", "channel"}:
         if sender_is_bot:
+            # Try parsing as a targeted handoff FIRST — accept valid handoffs
+            # addressed to this bot regardless of whether sender is pre-registered.
+            ok, prompt = _parse_handoff(raw)
+            if ok:
+                if user_id not in ALLOWED_BOT_IDS:
+                    log.info("Accepted targeted handoff from unregistered bot %s (%s)", user_id, username)
+                return (ok, prompt if text else text, prompt if caption else caption, None)
+            if prompt == A2A_IGNORED:
+                return False, text, caption, None
+            # For non-handoff messages, require bot to be in allowlist
             if user_id not in ALLOWED_BOT_IDS:
                 log.warning("Rejected group bot sender %s (%s)", user_id, username)
                 return False, text, caption, None
-            ok, prompt = _parse_handoff(raw)
-            if not ok and prompt == A2A_IGNORED:
-                return False, text, caption, None
-            if not ok and raw and _is_a2a_guidance(raw):
+            if raw and _is_a2a_guidance(raw):
                 log.info("Ignored peer A2A syntax guidance from bot sender %s (%s)", user_id, username)
                 return False, text, caption, None
-            if not ok and raw:
-                # Bot-originated raw messages should never trigger guidance spam in group chats.
-                # Log internally only; do not send A2A syntax guidance to bots.
+            if raw:
                 log.info("Silently ignoring bot-originated raw message from %s (%s)", user_id, username)
                 return False, text, caption, None
-            return (ok, prompt if text else text, prompt if caption else caption, None)
+            return False, text, caption, None
 
         if user_id not in ALLOWED_USERS:
             log.warning("Rejected group user sender %s (%s)", user_id, username)
