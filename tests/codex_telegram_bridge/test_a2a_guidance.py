@@ -7,7 +7,10 @@ from pathlib import Path
 def load_bridge_module():
     repo_root = Path(__file__).resolve().parents[2]
     bridge_path = repo_root / "services" / "codex-telegram-bridge" / "main.py"
+    registry_path = repo_root / "services" / "telegram-a2a" / "agents.json"
     os.environ.setdefault("CODEX_BRIDGE_LOG_FILE", "/tmp/codex-telegram-bridge-test.log")
+    # Force test registry so live env doesn't leak into tests
+    os.environ["A2A_BOT_REGISTRY_PATH"] = str(registry_path)
     spec = importlib.util.spec_from_file_location("codex_telegram_bridge_main", bridge_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

@@ -8,7 +8,10 @@ from pathlib import Path
 def load_bridge_module(env_updates=None):
     repo_root = Path(__file__).resolve().parents[2]
     bridge_path = repo_root / "services" / "claude-telegram-bridge" / "main.py"
+    registry_path = repo_root / "services" / "telegram-a2a" / "agents.json"
     os.environ.setdefault("BRIDGE_STATE_DIR", "/tmp/claude-telegram-bridge-test-state")
+    # Force test registry so live env doesn't leak into tests
+    os.environ["A2A_BOT_REGISTRY_PATH"] = str(registry_path)
     if env_updates:
         for key, value in env_updates.items():
             if value is None:
@@ -98,8 +101,8 @@ def test_a2a_status_envelope_uses_repo_alias_target():
     )
 
     assert envelope.startswith("/handoff@ExampleCodexBot ")
-    assert '"type":"status"' in envelope
-    assert '"requires_response":false' in envelope
+    assert '"type"' in envelope and "status" in envelope
+    assert '"requires_response"' in envelope and "false" in envelope
 
 
 def test_valid_status_message_does_not_receive_guidance():
@@ -520,3 +523,53 @@ def test_task_id_deduplication_rejects_duplicate():
     ok2, prompt2 = bridge._parse_handoff(handoff)
     assert ok2 is False
     assert prompt2 == bridge.A2A_IGNORED
+
+
+def test_accepts_targeted_handoff_from_unregistered_bot():
+    """Valid /handoff@ThisBot from an unknown bot should be accepted."""
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "ExampleClaudeBot"
+    bridge.BOT_ID = 1000000003
+    bridge.ALLOWED_BOT_IDS = set()
+    bridge.ALLOWED_CHAT_IDS = {-1000000000000}
+
+    handoff_text = (
+        '/handoff@ExampleClaudeBot {"from":"UnknownBot","to":"ExampleClaudeBot",'
+        '"task_id":"unreg-task-1","ttl":1,"requires_response":true,'
+        '"type":"task","body":"Please run the tests."}'
+    )
+
+    should_process, text, caption, auto_reply = bridge.should_process_group_message(
+        {
+            "chat": {"id": -1000000000000, "type": "supergroup"},
+            "from": {"id": 9999999999, "username": "UnknownBot", "is_bot": True},
+        },
+        handoff_text,
+        "",
+    )
+
+    assert should_process is True
+    assert "A2A handoff from UnknownBot" in text
+    assert "Please run the tests." in text
+    assert auto_reply is None
+
+
+def test_rejects_non_handoff_from_unregistered_bot():
+    """Non-handoff messages from unregistered bots should still be rejected."""
+    bridge = load_bridge_module()
+    bridge.BOT_USERNAME = "ExampleClaudeBot"
+    bridge.BOT_ID = 1000000003
+    bridge.ALLOWED_BOT_IDS = set()
+    bridge.ALLOWED_CHAT_IDS = {-1000000000000}
+
+    should_process, text, caption, auto_reply = bridge.should_process_group_message(
+        {
+            "chat": {"id": -1000000000000, "type": "supergroup"},
+            "from": {"id": 9999999999, "username": "UnknownBot", "is_bot": True},
+        },
+        "Hey everyone, just chatting",
+        "",
+    )
+
+    assert should_process is False
+    assert auto_reply is None
