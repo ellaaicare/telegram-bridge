@@ -1,0 +1,22 @@
+[Unit]
+Description=Claude Code Telegram Plugin (persistent interactive session for @PlatoDevBot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+Environment=TERM=xterm-256color
+# Unset ANTHROPIC_API_KEY so Claude Code uses the claude.ai OAuth credential
+# from ~/.claude/.credentials.json (subscription billing, not API billing).
+Environment=ANTHROPIC_API_KEY=
+ExecStart=/usr/bin/tmux new-session -d -s claude-telegram -c %h \
+  '/usr/bin/claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions'
+ExecStop=/usr/bin/tmux kill-session -t claude-telegram
+Restart=on-failure
+RestartSec=10
+# Resource limits matching the existing bridge service
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
