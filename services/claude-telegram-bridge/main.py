@@ -1305,6 +1305,33 @@ def record_session(session_id: str, label: str = ""):
     save_state()
 
 
+def _is_invalid_tool_use_resume_error(text: str | None) -> bool:
+    """Claude rejects some old transcripts with now-invalid historical tool IDs."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return (
+        "tool_use.id" in lowered
+        and "string should match pattern" in lowered
+    )
+
+
+def quarantine_session(session_id: str, reason: str):
+    """Remove a bad session from active resume pointers without deleting history."""
+    folder = state.get("active_folder")
+    if state.get("default_session_id") == session_id:
+        state["default_session_id"] = None
+    if folder and state.get("folder_sessions", {}).get(folder) == session_id:
+        state["folder_sessions"].pop(folder, None)
+    if session_id in state.get("sessions", {}):
+        state["sessions"][session_id]["quarantined"] = True
+        state["sessions"][session_id]["quarantine_reason"] = reason
+        state["sessions"][session_id]["quarantined_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+    save_state()
+
+
 def path_to_claude_key(folder_path: str) -> str:
     """Convert folder path to Claude's project key format."""
     return folder_path.replace("/", "-")
@@ -1949,6 +1976,28 @@ async def run_harness(
                     suppress_footer=suppress_footer,
                 )
             return f"(empty response)\n\nstderr: {err[:300]}", None
+
+        if (
+            HARNESS_CLI == "claude"
+            and sid
+            and not new_session
+            and _is_invalid_tool_use_resume_error(result_text)
+        ):
+            log.warning(
+                "Quarantining Claude session %s after invalid tool_use.id resume error",
+                sid,
+            )
+            quarantine_session(
+                sid,
+                "Claude API rejected historical tool_use.id values on resume",
+            )
+            return await run_harness(
+                prompt,
+                chat_id,
+                new_session=True,
+                suppress_progress_messages=suppress_progress_messages,
+                suppress_footer=suppress_footer,
+            )
 
         if suppress_footer:
             return result_text, result_session_id
