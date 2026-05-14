@@ -6,9 +6,11 @@ VENV_DIR="${VENV_DIR:-${ROOT_DIR}/venv}"
 
 cd "${ROOT_DIR}"
 
-if [ -f .env ]; then
+ENV_FILE="${BRIDGE_ENV_FILE:-.env}"
+
+if [ -f "${ENV_FILE}" ]; then
   set -a
-  . ./.env
+  . "${ENV_FILE}"
   set +a
 fi
 
