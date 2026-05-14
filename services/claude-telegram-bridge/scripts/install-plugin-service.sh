@@ -40,12 +40,17 @@ cat > "${PLUGIN_CONFIG_DIR}/.env" <<EOF
 TELEGRAM_BOT_TOKEN=${TOKEN}
 EOF
 
-echo "==> Writing ${PLUGIN_CONFIG_DIR}/access.json (allowlist for user ${ALLOWED_USER_ID})"
+echo "==> Writing ${PLUGIN_CONFIG_DIR}/access.json (pairing mode for first run; switch to allowlist after /telegram:access pair)"
+# Start in `pairing` so the plugin issues a pairing code on first DM, even
+# though the user is on allowFrom — the plugin requires explicit pairing
+# before it'll route messages to Claude. After /telegram:access pair completes
+# successfully, edit dmPolicy to "allowlist" to silently drop unknown senders.
 cat > "${PLUGIN_CONFIG_DIR}/access.json" <<EOF
 {
-  "dmPolicy": "allowlist",
+  "dmPolicy": "pairing",
   "allowFrom": [${ALLOWED_USER_ID}],
   "groups": {},
+  "pending": {},
   "mentionPatterns": []
 }
 EOF

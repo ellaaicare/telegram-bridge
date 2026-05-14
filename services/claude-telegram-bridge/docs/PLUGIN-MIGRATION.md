@@ -52,10 +52,16 @@ systemctl --user enable --now claude-telegram-plugin.service
 # until someone attaches to tmux and types "1".
 
 # Pair (one-time)
+# IMPORTANT: dmPolicy starts as "pairing" — even users listed in allowFrom
+# must complete pairing before the plugin routes messages to Claude.
+#
 # 1. Send any DM to @PlatoDevBot from Telegram → bot replies with 6-char pairing code
 # 2. Attach to tmux: tmux attach -t claude-telegram
 # 3. Type: /telegram:access pair <code>
 # 4. Detach: Ctrl-b d
+# 5. Switch policy to allowlist:
+#    jq '.dmPolicy = "allowlist"' ~/.claude/channels/telegram/access.json | sponge ~/.claude/channels/telegram/access.json
+#    (no service restart needed — server re-reads access.json on every inbound message)
 ```
 
 ## What is lost (and how to recover later)
