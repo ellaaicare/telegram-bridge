@@ -47,6 +47,10 @@ systemctl --user stop claude-telegram-bridge.service
 systemctl --user disable claude-telegram-bridge.service
 systemctl --user enable --now claude-telegram-plugin.service
 
+# Note: the installer pre-accepts the "Trust this folder?" dialog for $HOME
+# in ~/.claude.json. Without this, every service restart blocks the session
+# until someone attaches to tmux and types "1".
+
 # Pair (one-time)
 # 1. Send any DM to @PlatoDevBot from Telegram → bot replies with 6-char pairing code
 # 2. Attach to tmux: tmux attach -t claude-telegram

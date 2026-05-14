@@ -7,11 +7,12 @@ Wants=network-online.target
 Type=forking
 WorkingDirectory=%h
 Environment=TERM=xterm-256color
+Environment=TMUX_SESSION=claude-telegram
+Environment=PLUGIN_START_DIR=%h
 # Unset ANTHROPIC_API_KEY so Claude Code uses the claude.ai OAuth credential
 # from ~/.claude/.credentials.json (subscription billing, not API billing).
 Environment=ANTHROPIC_API_KEY=
-ExecStart=/usr/bin/tmux new-session -d -s claude-telegram -c %h \
-  '/usr/bin/claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions'
+ExecStart=%h/telegram-bridge/services/claude-telegram-bridge/systemd/claude-telegram-plugin-launch.sh
 ExecStop=/usr/bin/tmux kill-session -t claude-telegram
 Restart=on-failure
 RestartSec=10

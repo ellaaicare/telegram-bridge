@@ -50,6 +50,23 @@ cat > "${PLUGIN_CONFIG_DIR}/access.json" <<EOF
 }
 EOF
 
+echo "==> Pre-accepting trust dialog for ${HOME} so service restarts don't stall"
+python3 - <<PYEOF
+import json, os, pathlib
+p = pathlib.Path.home() / ".claude.json"
+if not p.exists():
+    print(f"WARNING: {p} not found; skipping trust pre-accept", file=__import__('sys').stderr)
+else:
+    d = json.loads(p.read_text())
+    proj = d.setdefault("projects", {}).setdefault(str(pathlib.Path.home()), {})
+    if not proj.get("hasTrustDialogAccepted"):
+        proj["hasTrustDialogAccepted"] = True
+        p.write_text(json.dumps(d, indent=2))
+        print(f"    Set {pathlib.Path.home()} trust=True")
+    else:
+        print(f"    {pathlib.Path.home()} already trusted")
+PYEOF
+
 echo "==> Linking systemd unit"
 mkdir -p "${SYSTEMD_USER_DIR}"
 ln -sf "${ROOT_DIR}/systemd/${UNIT_NAME}" "${SYSTEMD_USER_DIR}/${UNIT_NAME}"
