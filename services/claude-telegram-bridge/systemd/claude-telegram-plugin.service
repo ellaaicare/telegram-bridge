@@ -1,0 +1,26 @@
+[Unit]
+Description=Claude Code Telegram Plugin (persistent interactive session for @PlatoDevBot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+Environment=TERM=xterm-256color
+Environment=TMUX_SESSION=claude-telegram
+Environment=PLUGIN_START_DIR=%h/.telegram-bridge-workspaces/claude
+# bun is required by telegram@claude-plugins-official's MCP server.
+# npm-global path makes `claude` (the v2.1.141 binary) resolvable.
+Environment=PATH=%h/.bun/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Unset ANTHROPIC_API_KEY so Claude Code uses the claude.ai OAuth credential
+# from ~/.claude/.credentials.json (subscription billing, not API billing).
+Environment=ANTHROPIC_API_KEY=
+ExecStart=%h/telegram-bridge/services/claude-telegram-bridge/systemd/claude-telegram-plugin-launch.sh
+ExecStop=/usr/bin/tmux kill-session -t claude-telegram
+Restart=on-failure
+RestartSec=10
+# Resource limits matching the existing bridge service
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
