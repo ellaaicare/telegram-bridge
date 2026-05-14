@@ -8,6 +8,9 @@ SESSION_NAME="${TMUX_SESSION:-claude-telegram}"
 START_DIR="${PLUGIN_START_DIR:-${HOME}}"
 CLAUDE_BIN="${CLAUDE_BIN:-${HOME}/.npm-global/bin/claude}"
 TMUX_BIN="${TMUX_BIN:-/usr/bin/tmux}"
+# -c continues the most-recent conversation in START_DIR so reboots/restarts
+# preserve context. Empty string disables.
+CONTINUE_FLAG="${PLUGIN_CONTINUE_FLAG:--c}"
 
 # Force OAuth subscription billing — ignore any inherited ANTHROPIC_API_KEY.
 unset ANTHROPIC_API_KEY
@@ -18,4 +21,4 @@ if "${TMUX_BIN}" has-session -t "${SESSION_NAME}" 2>/dev/null; then
 fi
 
 exec "${TMUX_BIN}" new-session -d -s "${SESSION_NAME}" -c "${START_DIR}" \
-  "${CLAUDE_BIN} --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
+  "${CLAUDE_BIN} ${CONTINUE_FLAG} --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
