@@ -20,5 +20,7 @@ if "${TMUX_BIN}" has-session -t "${SESSION_NAME}" 2>/dev/null; then
   exit 0
 fi
 
+MODEL_FLAG="${PLUGIN_MODEL_FLAG:---model opus}"
+
 exec "${TMUX_BIN}" new-session -d -s "${SESSION_NAME}" -c "${START_DIR}" \
-  "${CLAUDE_BIN} ${CONTINUE_FLAG} --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
+  "${CLAUDE_BIN} ${CONTINUE_FLAG} ${MODEL_FLAG} --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
