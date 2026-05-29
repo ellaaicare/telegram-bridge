@@ -1,0 +1,17 @@
+[Unit]
+Description=Grok Build Telegram Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/letta/telegram-bridge/services/grok-telegram-bridge
+ExecStart=/home/letta/telegram-bridge/services/grok-telegram-bridge/start-bridge.sh
+Restart=always
+RestartSec=10
+
+Environment=HOME=/home/letta
+Environment=PATH=/home/letta/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

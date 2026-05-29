@@ -181,6 +181,7 @@ HARNESS_LABEL = os.environ.get("HARNESS_LABEL", "").strip() or {
     "claude": "Claude Code",
     "opencode": "OpenCode",
     "kilo": "Kilo Code",
+    "grok": "Grok Build",
 }.get(HARNESS_CLI, HARNESS_CLI.title())
 HARNESS_SERVICE_NAME = (
     os.environ.get("HARNESS_SERVICE_NAME", "").strip()
@@ -190,6 +191,7 @@ HARNESS_TOKEN_ENV = os.environ.get("HARNESS_TOKEN_ENV", "").strip() or {
     "claude": "CLAUDE_TELEGRAM_BOT_TOKEN",
     "opencode": "OPENCODE_TELEGRAM_BOT_TOKEN",
     "kilo": "KILOCODE_TELEGRAM_BOT_TOKEN",
+    "grok": "GROK_TELEGRAM_BOT_TOKEN",
 }.get(HARNESS_CLI, "TELEGRAM_BOT_TOKEN")
 HARNESS_AGENT = os.environ.get("HARNESS_AGENT", "").strip()
 HARNESS_SESSION_BACKEND = (
@@ -1847,6 +1849,24 @@ async def run_harness(
         if HARNESS_AGENT:
             cmd.extend(["--agent", HARNESS_AGENT])
         cmd.append(prompt)
+    elif HARNESS_CLI == "grok":
+        cmd = ["grok", "-p", prompt, "--output-format", "streaming-json", "--yolo"]
+        if sid:
+            cmd.extend(["-s", sid])
+        if BRIDGE_MODEL:
+            cmd.extend(["-m", BRIDGE_MODEL])
+        if HARNESS_AGENT:
+            cmd.extend(["--agent", HARNESS_AGENT])
+        # Safety hardening — Grok can also kill its own bridge process
+        cmd.extend([
+            "--rules",
+            "IMPORTANT: You are running inside the Telegram bridge service on a remote machine. "
+            "NEVER run systemctl, service, kill, pkill, or any process management commands "
+            "(systemctl, kill, pkill, service, restart, stop). These will kill your own host process and crash the bridge. "
+            "If the user asks about service status, restarting things, or infrastructure commands, "
+            "politely explain that you cannot perform those actions from inside the bridge.",
+        ])
+        cmd.extend(["--cwd", cwd])
     else:
         return f"Error: unsupported harness `{HARNESS_CLI}`", None
 
@@ -1953,6 +1973,32 @@ async def run_harness(
                     "assistant", "message", "output", "text",
                 }:
                     result_text = extracted_text
+            elif HARNESS_CLI == "grok":
+                # Grok headless streaming-json format
+                if event_type == "text":
+                    data = event.get("data")
+                    if isinstance(data, str) and data:
+                        result_text = (result_text or "") + data
+                elif event_type == "thought":
+                    # Grok internal reasoning — we can optionally surface as progress
+                    thought = event.get("data")
+                    if isinstance(thought, str) and thought and not suppress_progress_messages:
+                        # Send short thoughts as activity indicators (throttled)
+                        now = time.time()
+                        if now - last_activity_update > 8:
+                            short = thought[:120].replace("\n", " ")
+                            await send_message(chat_id, f"_thinking: {short}..._")
+                            last_activity_update = now
+                elif event_type == "end":
+                    # Final event — capture session id
+                    result_session_id = (
+                        event.get("sessionId")
+                        or event.get("session_id")
+                        or result_session_id
+                    )
+                    # Grok doesn't emit duration_ms the same way; we can leave it 0 or estimate later
+                    if result_text is None:
+                        result_text = ""
 
         # Wait for process to fully exit
         await proc.wait()
@@ -2355,7 +2401,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
     if cmd in ("/help", "/start"):
         folder_name = get_folder_display_name(state["active_folder"])
         agent_command = ""
-        if HARNESS_CLI in {"opencode", "kilo"}:
+        if HARNESS_CLI in {"opencode", "kilo", "grok"}:
             agent_command = "`/agent [name|off]` — Show/set harness agent profile\n"
         await send_message(
             chat_id,
@@ -3059,7 +3105,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         return
 
     if cmd == "/agent":
-        if HARNESS_CLI not in {"opencode", "kilo"}:
+        if HARNESS_CLI not in {"opencode", "kilo", "grok"}:
             await send_message(
                 chat_id,
                 f"`/agent` is not supported for `{HARNESS_CLI}`.",

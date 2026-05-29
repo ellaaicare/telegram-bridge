@@ -4,10 +4,11 @@ Standalone home for Ella's Telegram agent bridges.
 
 This repository contains:
 
-- `services/claude-telegram-bridge`: Telegram bridge for Claude Code CLI (also used as HARNESS for kilo/opencode).
+- `services/claude-telegram-bridge`: Telegram bridge for Claude Code CLI (also used as HARNESS for kilo/opencode/grok).
 - `services/codex-telegram-bridge`: Telegram bridge for the Codex CLI.
 - `services/kilo-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=kilo`.
 - `services/opencode-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=opencode`.
+- `services/grok-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=grok` (**skeleton created; core support pending — see issue #18**).
 - `services/telegram-a2a/agents.json`: shared A2A bot registry (example — live registry at `~/.config/telegram-bridge/agents.json`).
 - `scripts/deploy-fleet.sh`: Fleet-wide deploy orchestrator.
 - `skills/telegram-a2a-handoff/SKILL.md`: A2A handoff protocol guidance.
@@ -18,8 +19,9 @@ This repository contains:
 
 - Codex bridge: `0.2.0`, build `a2a-quiet-status-pr685.7681cf5`
 - Claude bridge: `3.5.0`, build `a2a-quiet-status-pr685.7681cf5`
+- Grok bridge: **skeleton only** (thin wrapper at `services/grok-telegram-bridge/`). Full `HARNESS_CLI=grok` support pending in core. See issue #18.
 
-Both bridges expose this metadata from `/health` and `/status`.
+The main bridges expose version/build metadata from `/health` and `/status`.
 
 ## Test
 
@@ -55,7 +57,7 @@ restarts across systemd-user (Linux) and launchd (macOS).
 
 | Node | SSH | OS | Bridges | Service Manager |
 |------|-----|----|---------|-----------------|
-| imac | (local) | Linux | claude, kilo, opencode | `systemctl --user` |
+| imac | (local) | Linux | claude, kilo, opencode, **grok** (skeleton) | `systemctl --user` |
 | macbookair | admin-macbookair1 | Linux | codex, claude | `systemctl --user` |
 | macmini | ellaai@100.76.138.56 | macOS | claude, codex, kilo, opencode | `launchctl` |
 
