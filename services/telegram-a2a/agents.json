@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-17",
+  "updated_at": "2026-05-29",
   "description": "Example Telegram A2A bot registry. Copy this file to a private path with live chat and bot IDs, then set A2A_BOT_REGISTRY_PATH.",
   "groups": {
     "example-dev": {
@@ -54,11 +54,11 @@
       "trusted": true
     },
     {
-      "canonical": "iMacGrok",
-      "username": "ella_grok_bot",
-      "id": 8960208722,
-      "aliases": ["iMacGrok", "imacgrok", "EllaGrokBot", "ella_grok_bot", "@ella_grok_bot", "GrokBuild"],
-      "groups": ["ella-dev"],
+      "canonical": "ExampleGrokBot",
+      "username": "ExampleGrokBot",
+      "id": 1000000006,
+      "aliases": ["ExampleGrokBot", "examplegrokbot", "@ExampleGrokBot"],
+      "groups": ["example-dev"],
       "harness": "grok",
       "trusted": true
     }

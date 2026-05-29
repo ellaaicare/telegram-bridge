@@ -8,7 +8,7 @@ This repository contains:
 - `services/codex-telegram-bridge`: Telegram bridge for the Codex CLI.
 - `services/kilo-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=kilo`.
 - `services/opencode-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=opencode`.
-- `services/grok-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=grok` (**skeleton created; core support pending — see issue #18**).
+- `services/grok-telegram-bridge`: Thin wrapper — imports claude bridge with `HARNESS_CLI=grok`.
 - `services/telegram-a2a/agents.json`: shared A2A bot registry (example — live registry at `~/.config/telegram-bridge/agents.json`).
 - `scripts/deploy-fleet.sh`: Fleet-wide deploy orchestrator.
 - `skills/telegram-a2a-handoff/SKILL.md`: A2A handoff protocol guidance.
@@ -19,7 +19,7 @@ This repository contains:
 
 - Codex bridge: `0.2.0`, build `a2a-quiet-status-pr685.7681cf5`
 - Claude bridge: `3.5.0`, build `a2a-quiet-status-pr685.7681cf5`
-- Grok bridge: **skeleton only** (thin wrapper at `services/grok-telegram-bridge/`). Full `HARNESS_CLI=grok` support pending in core. See issue #18.
+- Grok bridge: Full support via `HARNESS_CLI=grok` (see `services/grok-telegram-bridge/`).
 
 The main bridges expose version/build metadata from `/health` and `/status`.
 
@@ -57,7 +57,7 @@ restarts across systemd-user (Linux) and launchd (macOS).
 
 | Node | SSH | OS | Bridges | Service Manager |
 |------|-----|----|---------|-----------------|
-| imac | (local) | Linux | claude, kilo, opencode, **grok** (skeleton) | `systemctl --user` |
+| imac | (local) | Linux | claude, kilo, opencode, **grok** | `systemctl --user` |
 | macbookair | admin-macbookair1 | Linux | codex, claude | `systemctl --user` |
 | macmini | ellaai@100.76.138.56 | macOS | claude, codex, kilo, opencode | `launchctl` |
 
@@ -74,10 +74,34 @@ cd services/claude-telegram-bridge
 
 ### A2A bot registry
 
-The live bot registry with real bot IDs lives at `~/.config/telegram-bridge/agents.json`
-on each node. The file at `services/telegram-a2a/agents.json` is an **example template**
-with placeholder IDs. Each bridge's `.env` must set:
+**Important:** This is a public repository. The file `services/telegram-a2a/agents.json` is only an **example template** with fake IDs. It must never contain real bot IDs, real Telegram group chat IDs, or any production data.
+
+The authoritative registry lives on each machine at:
+
+```
+~/.config/telegram-bridge/agents.json
+```
+
+Each bridge's `.env` must point to the live file:
 
 ```
 A2A_BOT_REGISTRY_PATH=/path/to/.config/telegram-bridge/agents.json
 ```
+
+When adding a new bot (for example, a new Grok Build instance), add an entry like this to the live registry on the relevant nodes:
+
+```json
+{
+  "canonical": "iMacGrok",
+  "username": "ella_grok_bot",
+  "id": 8960208722,
+  "aliases": ["iMacGrok", "EllaGrokBot", "@ella_grok_bot"],
+  "groups": ["ella-dev"],
+  "harness": "grok",
+  "trusted": true
+}
+```
+
+After editing the live registry, restart the affected bridge(s) so they pick up the change.
+
+See also `docs/runbooks/telegram-a2a-handoff.md` and `skills/telegram-a2a-handoff/SKILL.md` for operational details.
