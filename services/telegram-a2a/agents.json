@@ -52,6 +52,15 @@
       "aliases": ["ExampleUtilityBot", "exampleutilitybot", "@ExampleUtilityBot"],
       "groups": ["example-dev"],
       "trusted": true
+    },
+    {
+      "canonical": "iMacGrok",
+      "username": "ella_grok_bot",
+      "id": 8960208722,
+      "aliases": ["iMacGrok", "imacgrok", "EllaGrokBot", "ella_grok_bot", "@ella_grok_bot", "GrokBuild"],
+      "groups": ["ella-dev"],
+      "harness": "grok",
+      "trusted": true
     }
   ]
 }
