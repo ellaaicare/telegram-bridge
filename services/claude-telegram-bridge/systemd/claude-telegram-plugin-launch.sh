@@ -16,6 +16,9 @@ TMUX_BIN="${TMUX_BIN:-/usr/bin/tmux}"
 TMUX_SOCKET="${TMUX_SOCKET:-}"
 TMUX_LFLAG=()
 [ -n "${TMUX_SOCKET}" ] && TMUX_LFLAG=(-L "${TMUX_SOCKET}")
+# Expand the array with the `${arr[@]+...}` guard everywhere below: macOS ships
+# bash 3.2, where "${arr[@]}" on an EMPTY array under `set -u` throws "unbound
+# variable" and kills the script before the session is ever created.
 # -c continues the most-recent conversation in START_DIR so reboots/restarts
 # preserve context. Set PLUGIN_CONTINUE_FLAG="" (empty) to disable — e.g. a
 # bot's first launch in a dir with no prior conversation, where -c errors out.
@@ -25,7 +28,7 @@ CONTINUE_FLAG="${PLUGIN_CONTINUE_FLAG--c}"
 # Force OAuth subscription billing — ignore any inherited ANTHROPIC_API_KEY.
 unset ANTHROPIC_API_KEY
 
-if "${TMUX_BIN}" "${TMUX_LFLAG[@]}" has-session -t "${SESSION_NAME}" 2>/dev/null; then
+if "${TMUX_BIN}" ${TMUX_LFLAG[@]+"${TMUX_LFLAG[@]}"} has-session -t "${SESSION_NAME}" 2>/dev/null; then
   echo "tmux session ${SESSION_NAME} already exists" >&2
   exit 0
 fi
@@ -42,4 +45,4 @@ if [ -n "${TELEGRAM_STATE_DIR:-}" ]; then
   CMD="TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR} ${CMD}"
 fi
 
-exec "${TMUX_BIN}" "${TMUX_LFLAG[@]}" new-session -d -s "${SESSION_NAME}" -c "${START_DIR}" "${CMD}"
+exec "${TMUX_BIN}" ${TMUX_LFLAG[@]+"${TMUX_LFLAG[@]}"} new-session -d -s "${SESSION_NAME}" -c "${START_DIR}" "${CMD}"
