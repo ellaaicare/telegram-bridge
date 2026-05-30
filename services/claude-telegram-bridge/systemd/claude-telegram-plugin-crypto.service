@@ -1,0 +1,35 @@
+[Unit]
+Description=Claude Code Telegram Plugin (persistent interactive session for @CryptoPlatoBot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+Environment=TERM=xterm-256color
+Environment=TMUX_SESSION=claude-telegram-crypto
+# Own tmux server socket so systemd Type=forking tracks this instance instead of
+# silently attaching to the default PlatoDevBot server and getting torn down.
+Environment=TMUX_SOCKET=claude-telegram-crypto
+Environment=PLUGIN_START_DIR=%h/dev/polybot
+# Start fresh — no prior Claude Code conversation exists in the polybot dir to
+# resume, and -c errors out on an empty/stale session. Drop this once the bot
+# has an established conversation if cross-restart continuity is wanted.
+Environment=PLUGIN_CONTINUE_FLAG=
+# Per-bot channel config (token + allowlist) so this instance runs CryptoPlatoBot
+# instead of the default PlatoDevBot at ~/.claude/channels/telegram.
+Environment=TELEGRAM_STATE_DIR=%h/.claude/channels/telegram-crypto
+# bun is required by telegram@claude-plugins-official's MCP server.
+# npm-global path makes `claude` resolvable.
+Environment=PATH=%h/.bun/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Unset ANTHROPIC_API_KEY so Claude Code uses the claude.ai OAuth credential
+# from ~/.claude/.credentials.json (subscription billing, not API billing).
+Environment=ANTHROPIC_API_KEY=
+ExecStart=%h/telegram-bridge/services/claude-telegram-bridge/systemd/claude-telegram-plugin-launch.sh
+ExecStop=/usr/bin/tmux -L claude-telegram-crypto kill-session -t claude-telegram-crypto
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
