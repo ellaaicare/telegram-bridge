@@ -87,13 +87,26 @@ def test_router_events_coalesce_into_one_pending_run():
 def test_log_redaction_masks_provider_keys_and_bot_tokens():
     bridge = load_bridge_module()
 
+    secrets = [
+        "sk-example_abcdefghijklmnopqrstuvwxyz",
+        "gsk_abcdefghijklmnopqrstuvwxyz123456",
+        "xai-abcdefghijklmnopqrstuvwxyz123456",
+        "AIzaabcdefghijklmnopqrstuvwxyz1234567890",
+        "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+        "eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop",
+        "123456789:abcdefghijklmnopqrstuvwxyz123456",
+        "named-secret-value-123456",
+    ]
     redacted = bridge._redact_log_text(
-        "use sk-example_abcdefghijklmnopqrstuvwxyz and 123456789:abcdefghijklmnopqrstuvwxyz123456"
+        "use "
+        + " ".join(secrets[:5])
+        + f" Authorization: Bearer {secrets[5]} {secrets[6]} "
+        + f'OPENROUTER_API_KEY="{secrets[7]}"'
     )
 
-    assert "sk-example" not in redacted
-    assert "123456789:" not in redacted
-    assert redacted.count("[REDACTED_") == 2
+    assert all(secret not in redacted for secret in secrets)
+    assert "OPENROUTER_API_KEY=[REDACTED_SECRET]" in redacted
+    assert redacted.count("[REDACTED_") == len(secrets)
 
 
 def test_human_prompt_runs_before_pending_automation():
@@ -287,3 +300,96 @@ def test_processing_coalesced_batch_sends_terminal_result_for_every_task_id():
     assert '"task_id": "task-2"' in sent[1]
     assert "Completed the consolidated GitHub review." in sent[0]
     assert "Completed the consolidated GitHub review." in sent[1]
+
+
+def test_queue_worker_failure_sends_terminal_result_for_every_coalesced_task_id():
+    bridge = load_bridge_module()
+    sent = configure_queue(bridge)
+    bridge._shutting_down = False
+    events = [
+        bridge._coalescible_a2a_event(router_prompt("task-1", "First."), "Letta_moltbot"),
+        bridge._coalescible_a2a_event(router_prompt("task-2", "Second."), "Letta_moltbot"),
+    ]
+    item = {
+        "chat_id": -100,
+        "msg_id": 11,
+        "text": bridge._format_coalesced_a2a_prompt(events),
+        "images": [],
+        "folder": "/tmp",
+        "session_id": "session-1",
+        "context_id": None,
+        "pending_label": None,
+        "a2a_reply_target": "Letta_moltbot",
+        "a2a_task_ids": ["task-1", "task-2"],
+    }
+
+    async def fake_process(_item):
+        raise RuntimeError("OPENAI_API_KEY=must-not-leak")
+
+    async def exercise():
+        bridge._process_prompt = fake_process
+        await bridge._prompt_queue.put(item)
+        worker = asyncio.create_task(bridge.queue_worker())
+        for _ in range(100):
+            terminal = [text for _, text, _ in sent if '"type": "result"' in text]
+            if len(terminal) == 2:
+                break
+            await asyncio.sleep(0.01)
+        bridge._shutting_down = True
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise())
+
+    terminal = [text for _, text, _ in sent if '"type": "result"' in text]
+    assert len(terminal) == 2
+    assert '"task_id": "task-1"' in terminal[0]
+    assert '"task_id": "task-2"' in terminal[1]
+    assert all("Bridge processing failed before completion" in text for text in terminal)
+    assert all("must-not-leak" not in text for _, text, _ in sent)
+
+
+def test_queue_worker_cancellation_sends_only_missing_terminal_results():
+    bridge = load_bridge_module()
+    sent = configure_queue(bridge)
+    bridge._shutting_down = False
+    started = asyncio.Event()
+    wait_forever = asyncio.Event()
+    item = {
+        "chat_id": -100,
+        "msg_id": 11,
+        "text": router_prompt("task-1", "First."),
+        "images": [],
+        "folder": "/tmp",
+        "session_id": "session-1",
+        "context_id": None,
+        "pending_label": None,
+        "a2a_reply_target": "Letta_moltbot",
+        "a2a_task_ids": ["task-1", "task-2"],
+        "terminal_a2a_task_ids": {"task-1"},
+    }
+
+    async def fake_process(_item):
+        started.set()
+        await wait_forever.wait()
+
+    async def exercise():
+        bridge._process_prompt = fake_process
+        await bridge._prompt_queue.put(item)
+        worker = asyncio.create_task(bridge.queue_worker())
+        await started.wait()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise())
+
+    terminal = [text for _, text, _ in sent if '"type": "result"' in text]
+    assert len(terminal) == 1
+    assert '"task_id": "task-2"' in terminal[0]
+    assert "Cancelled before completion" in terminal[0]

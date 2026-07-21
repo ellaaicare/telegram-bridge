@@ -38,7 +38,29 @@ def _truthy_env(name: str, default: str = "false") -> bool:
 
 def _redact_log_text(raw: str) -> str:
     text = str(raw or "")
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}\b", "[REDACTED_API_KEY]", text)
+    text = re.sub(
+        r"(?i)\b([A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD))"
+        r"(\s*[:=]\s*)([\"']?)[^\s,;\"'&}]+([\"']?)",
+        r"\1\2[REDACTED_SECRET]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(authorization\s*:\s*bearer|bearer)\s+[A-Za-z0-9._~+/=-]{12,}",
+        r"\1 [REDACTED_BEARER_TOKEN]",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:sk-[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{12,}|xai-[A-Za-z0-9_-]{12,}|"
+        r"AIza[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_-]{20,}|"
+        r"github_pat_[A-Za-z0-9_-]{20,})\b",
+        "[REDACTED_API_KEY]",
+        text,
+    )
+    text = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        "[REDACTED_JWT]",
+        text,
+    )
     text = re.sub(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", "[REDACTED_BOT_TOKEN]", text)
     return text
 
@@ -533,7 +555,7 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
         chat_type,
         user_id,
         username,
-        _redact_log_text(raw[:120]) if raw else "[media]",
+        _redact_log_text(raw)[:120] if raw else "[media]",
     )
 
     if BOT_ID and user_id == BOT_ID:
@@ -1094,7 +1116,7 @@ def _describe_command_execution(item: dict) -> str:
     command = item.get("command", "")
     if not command:
         return "Running command"
-    return f"Running: `{command[:80]}`"
+    return f"Running: `{_redact_log_text(command)[:80]}`"
 
 
 async def run_codex(
@@ -1113,7 +1135,7 @@ async def run_codex(
         "Codex in %s: %s | prompt: %s",
         cwd,
         _redact_log_text(" ".join(cmd[:8])),
-        _redact_log_text(prompt[:80]),
+        _redact_log_text(prompt)[:80],
     )
 
     result_session_id = session_id
@@ -1242,7 +1264,7 @@ async def _watchdog_monitor(chat_id: int):
         if command and _is_instant_kill_command(command):
             await _watchdog_kill(
                 chat_id,
-                f"Known infinite command: `{command[:60]}`",
+                f"Known infinite command: `{_redact_log_text(command)[:60]}`",
                 _watchdog_current_item,
             )
             return
@@ -1269,7 +1291,7 @@ async def _watchdog_kill(chat_id: int, reason: str, item_info: dict | None):
         except ProcessLookupError:
             pass
 
-    detail = f"\nCommand: `{command[:100]}`" if command else ""
+    detail = f"\nCommand: `{_redact_log_text(command)[:100]}`" if command else ""
     await send_message(
         chat_id,
         f"*Watchdog killed stuck process*\nReason: {reason}{detail}\n\n"
@@ -1686,7 +1708,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
 async def cmd_clear_queue(chat_id: int, msg_id: int) -> tuple[int, int]:
     removed = await _prompt_queue.clear() if _prompt_queue else []
-    await _notify_cancelled_a2a_items(removed, "Cancelled by operator before execution via /clearqueue.")
+    await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /clearqueue.")
     event_count = sum(len(item.get("a2a_events") or [None]) for item in removed)
     await send_message(
         chat_id,
@@ -1696,17 +1718,29 @@ async def cmd_clear_queue(chat_id: int, msg_id: int) -> tuple[int, int]:
     return len(removed), event_count
 
 
-async def _notify_cancelled_a2a_items(items: list[dict], reason: str):
+async def _notify_terminal_a2a_items(items: list[dict], reason: str):
     for item in items:
         target = item.get("a2a_reply_target")
         if not target:
             continue
+        terminal_task_ids = item.setdefault("terminal_a2a_task_ids", set())
         for task_id in item.get("a2a_task_ids") or []:
-            await send_plain_message(
-                item["chat_id"],
-                _a2a_autowrap_result(target, task_id, reason),
-                reply_to=item.get("msg_id"),
-            )
+            if task_id in terminal_task_ids:
+                continue
+            try:
+                await send_plain_message(
+                    item["chat_id"],
+                    _a2a_autowrap_result(target, task_id, reason),
+                    reply_to=item.get("msg_id"),
+                )
+            except Exception as exc:
+                log.error(
+                    "Failed to send terminal A2A result task_id=%s: %s",
+                    task_id,
+                    _redact_log_text(str(exc)),
+                )
+                continue
+            terminal_task_ids.add(task_id)
 
 
 async def cmd_interrupt(
@@ -1719,7 +1753,7 @@ async def cmd_interrupt(
     removed = []
     if clear_pending and _prompt_queue:
         removed = await _prompt_queue.clear()
-        await _notify_cancelled_a2a_items(removed, "Cancelled by operator before execution via /stop.")
+        await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /stop.")
 
     active = _active_codex_proc is not None and _active_codex_proc.returncode is None
     if active:
@@ -1831,11 +1865,26 @@ async def queue_worker():
         _queue_last_dequeue = time.time()
         try:
             await _process_prompt(item)
+        except asyncio.CancelledError:
+            await _notify_terminal_a2a_items(
+                [item],
+                "Cancelled before completion by bridge worker shutdown. Retry from GitHub source of truth.",
+            )
+            raise
         except Exception as e:
-            log.error("Queue worker error: %s", e)
+            safe_error = _redact_log_text(str(e))
+            log.error("Queue worker error: %s", safe_error)
             chat_id = item["chat_id"]
             msg_id = item["msg_id"]
-            await send_message(chat_id, f"Error processing message: {e}", reply_to=msg_id)
+            try:
+                await send_message(chat_id, f"Error processing message: {safe_error}", reply_to=msg_id)
+            except Exception as notify_error:
+                log.error("Failed to send queue error message: %s", _redact_log_text(str(notify_error)))
+            await _notify_terminal_a2a_items(
+                [item],
+                f"Bridge processing failed before completion ({type(e).__name__}). "
+                "Retry from GitHub source of truth.",
+            )
         finally:
             _prompt_queue.task_done()
 
@@ -1982,8 +2031,11 @@ async def _process_prompt(item: dict):
                     _a2a_autowrap_result(a2a_reply_target, task_id, response_body),
                     reply_to=msg_id,
                 )
+                item.setdefault("terminal_a2a_task_ids", set()).add(task_id)
         elif a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
+            if a2a_task_ids:
+                item.setdefault("terminal_a2a_task_ids", set()).add(a2a_task_ids[0])
         else:
             await send_message(chat_id, response, reply_to=msg_id)
     finally:
@@ -2076,7 +2128,7 @@ async def poll_loop():
                 if not text and not caption and not has_media:
                     continue
 
-                log.info("Message from %s: %s", user_id, _redact_log_text((text or caption or "[media]")[:80]))
+                log.info("Message from %s: %s", user_id, _redact_log_text(text or caption or "[media]")[:80])
 
                 if text and text.startswith("/"):
                     asyncio.create_task(handle_command(chat_id, msg_id, text))
