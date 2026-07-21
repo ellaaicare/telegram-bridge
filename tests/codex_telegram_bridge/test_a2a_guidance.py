@@ -33,12 +33,12 @@ def test_allowed_bot_raw_chatter_is_silently_ignored():
             "chat": {"id": -1000000000000, "type": "supergroup"},
             "from": {"id": 1000000003, "username": "ExampleClaudeBot", "is_bot": True},
         },
-        "MacMiniClaude standing by",
+        "Retired peer standing by",
         "",
     )
 
     assert should_process is False
-    assert text == "MacMiniClaude standing by"
+    assert text == "Retired peer standing by"
     assert caption == ""
     assert auto_reply is None
 
@@ -110,8 +110,18 @@ def test_repo_registry_trusts_known_peer_bots_by_default():
     bridge = load_bridge_module()
 
     assert 1000000002 in bridge.ALLOWED_BOT_IDS
-    assert 1000000003 in bridge.ALLOWED_BOT_IDS
+    assert 1000000004 in bridge.ALLOWED_BOT_IDS
     assert bridge._canonical_handoff_target("iMacCodex") == "ExampleCodex2Bot"
+
+
+def test_retired_outbound_handoff_targets_are_blocked():
+    bridge = load_bridge_module()
+
+    for target in ("Linda", "Atlas", "ellaminibot", "MacMiniClaude"):
+        message = f'/handoff@{target} {{"type":"task"}}'
+        assert bridge._retired_outbound_handoff_target(message) == target
+
+    assert bridge._retired_outbound_handoff_target('/handoff@ExampleCodexBot {"type":"task"}') == ""
 
 
 def test_accepts_current_bot_alias_handoff_from_registry():

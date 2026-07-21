@@ -48,6 +48,7 @@ BRIDGE_DEFAULT_FOLDER=${HOME}
 BRIDGE_STATE_DIR=${HOME}/.local/state/claude-telegram-bridge
 A2A_TRUST_REGISTRY_BOTS=true
 A2A_BOT_REGISTRY_PATH=
+A2A_RETIRED_TARGETS=linda,claude,atlas,ellaminibot,macminiclaude
 ```
 
 Optional dispatch nodes can be configured with `DISPATCH_NODES_JSON`:
@@ -165,12 +166,14 @@ Required envelope:
 /handoff@TargetBot {"from":"SourceBot","to":"TargetBot","task_id":"stable-unique-id","ttl":1,"requires_response":true,"type":"task","body":"Do the work here."}
 ```
 
+`A2A_RETIRED_TARGETS` is a comma-separated outbound denylist. Handoffs to a
+retired alias are dropped even when stale model context still emits one.
+
 Alias examples accepted by the registry:
 
 ```text
 /handoff@ExampleCodexBot ...
 /handoff@iMacCodex ...
-/handoff@ExampleClaudeBot ...
 /handoff@ExampleClaude2Bot ...
 ```
 

@@ -28,15 +28,6 @@
       "trusted": true
     },
     {
-      "canonical": "MacMiniClaude",
-      "username": "ExampleClaudeBot",
-      "id": 1000000003,
-      "aliases": ["MacMiniClaude", "macminiclaude", "ExampleClaudeBot", "@ExampleClaudeBot"],
-      "groups": ["example-dev"],
-      "harness": "claude",
-      "trusted": true
-    },
-    {
       "canonical": "iMacClaude",
       "username": "ExampleClaude2Bot",
       "id": 1000000004,

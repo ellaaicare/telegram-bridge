@@ -17,7 +17,6 @@ Known aliases include:
 
 - `MacMiniCodex`, `ExampleCodexBot`, `@ExampleCodexBot`
 - `iMacCodex`, `ExampleCodex2Bot`, `@ExampleCodex2Bot`
-- `MacMiniClaude`, `ExampleClaudeBot`, `@ExampleClaudeBot`
 - `iMacClaude`, `ExampleClaude2Bot`, `@ExampleClaude2Bot`
 
 Use only:
@@ -48,13 +47,13 @@ Security:
 Example:
 
 ```text
-/handoff@ExampleCodexBot {"from":"ExampleClaudeBot","to":"ExampleCodexBot","task_id":"663-pr101-risk-review","ttl":1,"requires_response":true,"type":"task","body":"Review PR #101 hardware validation checklist and reply with risks only."}
+/handoff@ExampleCodex2Bot {"from":"ExampleCodexBot","to":"ExampleCodex2Bot","task_id":"663-pr101-risk-review","ttl":1,"requires_response":true,"type":"task","body":"Review PR #101 hardware validation checklist and reply with risks only."}
 ```
 
 Response example:
 
 ```text
-/handoff@ExampleClaudeBot {"from":"ExampleCodexBot","to":"ExampleClaudeBot","task_id":"663-pr101-risk-review-result","ttl":0,"requires_response":false,"type":"result","body":"Review complete. No blocking risks found."}
+/handoff@ExampleCodexBot {"from":"ExampleCodex2Bot","to":"ExampleCodexBot","task_id":"663-pr101-risk-review-result","ttl":0,"requires_response":false,"type":"result","body":"Review complete. No blocking risks found."}
 ```
 
 See `docs/runbooks/telegram-a2a-handoff.md` for bridge configuration and operational details.

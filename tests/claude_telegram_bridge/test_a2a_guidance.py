@@ -135,7 +135,17 @@ def test_repo_registry_trusts_known_peer_bots_by_default():
 
     assert 1000000001 in bridge.ALLOWED_BOT_IDS
     assert 1000000002 in bridge.ALLOWED_BOT_IDS
-    assert bridge._canonical_handoff_target("MacMiniClaude") == "ExampleClaudeBot"
+    assert bridge._canonical_handoff_target("iMacClaude") == "ExampleClaude2Bot"
+
+
+def test_retired_outbound_handoff_targets_are_blocked():
+    bridge = load_bridge_module()
+
+    for target in ("Linda", "Atlas", "ellaminibot", "MacMiniClaude"):
+        message = f'/handoff@{target} {{"type":"task"}}'
+        assert bridge._retired_outbound_handoff_target(message) == target
+
+    assert bridge._retired_outbound_handoff_target('/handoff@ExampleCodexBot {"type":"task"}') == ""
 
 
 def test_accepts_current_bot_alias_handoff_from_registry():

@@ -70,6 +70,7 @@ Copy `.env.example` to `.env` and set the values for your host.
 - `CODEX_ADD_DIRS`
 - `ALLOWED_CHAT_IDS`
 - `A2A_TRUST_REGISTRY_BOTS`
+- `A2A_RETIRED_TARGETS`
 
 If you want Codex shell commands to have outbound internet and unrestricted host access, set `CODEX_SANDBOX=danger-full-access`. Keep `workspace-write` if you want the default sandboxed mode.
 
@@ -81,6 +82,7 @@ ALLOWED_USER_IDS=
 ALLOWED_CHAT_IDS=-1000000000000
 A2A_TRUST_REGISTRY_BOTS=true
 A2A_BOT_REGISTRY_PATH=
+A2A_RETIRED_TARGETS=linda,claude,atlas,ellaminibot,macminiclaude
 A2A_QUEUE_COALESCE_ENABLED=true
 A2A_QUEUE_COALESCE_SENDERS=n8n-github-router
 A2A_QUEUE_COALESCE_MAX_EVENTS=20
