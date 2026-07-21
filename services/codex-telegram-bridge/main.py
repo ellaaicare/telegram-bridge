@@ -168,6 +168,14 @@ BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.3.0")
 BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-queue-coalescing-v1")
 BOT_TOKEN = os.environ.get("CODEX_TELEGRAM_BOT_TOKEN", "")
 A2A_BOT_REGISTRY = _load_a2a_registry()
+A2A_RETIRED_TARGETS = {
+    _norm_bot_key(value)
+    for value in os.environ.get(
+        "A2A_RETIRED_TARGETS",
+        "linda,claude,atlas,ellaminibot,macminiclaude",
+    ).split(",")
+    if _norm_bot_key(value)
+}
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
 ALLOWED_SENDER_IDS = _parse_int_set(os.environ.get("ALLOWED_SENDER_IDS", os.environ.get("ALLOWED_USER_IDS", "")))
 ALLOWED_BOT_IDS = _parse_int_set(os.environ.get("ALLOWED_BOT_IDS", ""))
@@ -331,6 +339,14 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
         f"{body}"
     )
     return True, prompt
+
+
+def _retired_outbound_handoff_target(text: str) -> str:
+    match = re.match(r"\s*/handoff@([A-Za-z0-9_]+)\b", str(text or ""), re.IGNORECASE)
+    if not match:
+        return ""
+    target = match.group(1)
+    return target if _norm_bot_key(target) in A2A_RETIRED_TARGETS else ""
 
 
 def _a2a_skill_reference() -> str:
@@ -906,6 +922,10 @@ def sanitize_markdown(text: str) -> str:
 
 
 async def send_message(chat_id: int, text: str, reply_to: int | None = None):
+    retired_target = _retired_outbound_handoff_target(text)
+    if retired_target:
+        log.warning("Suppressed outbound A2A handoff to retired target @%s", retired_target)
+        return None
     chunks = []
     remaining = text
     while remaining:
@@ -931,6 +951,10 @@ async def send_message(chat_id: int, text: str, reply_to: int | None = None):
 
 
 async def send_plain_message(chat_id: int, text: str, reply_to: int | None = None):
+    retired_target = _retired_outbound_handoff_target(text)
+    if retired_target:
+        log.warning("Suppressed outbound A2A handoff to retired target @%s", retired_target)
+        return None
     chunks = []
     remaining = text
     while remaining:

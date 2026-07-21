@@ -207,6 +207,14 @@ BOT_TOKEN = (
     or os.environ.get(HARNESS_TOKEN_ENV, "").strip()
 )
 A2A_BOT_REGISTRY = _load_a2a_registry()
+A2A_RETIRED_TARGETS = {
+    _norm_bot_key(value)
+    for value in os.environ.get(
+        "A2A_RETIRED_TARGETS",
+        "linda,claude,atlas,ellaminibot,macminiclaude",
+    ).split(",")
+    if _norm_bot_key(value)
+}
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
 ALLOWED_SENDER_IDS = _parse_int_set(
     os.environ.get("ALLOWED_SENDER_IDS", os.environ.get("ALLOWED_USER_IDS", ""))
@@ -357,6 +365,14 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
         f"{body}"
     )
     return True, prompt
+
+
+def _retired_outbound_handoff_target(text: str) -> str:
+    match = re.match(r"\s*/handoff@([A-Za-z0-9_]+)\b", str(text or ""), re.IGNORECASE)
+    if not match:
+        return ""
+    target = match.group(1)
+    return target if _norm_bot_key(target) in A2A_RETIRED_TARGETS else ""
 
 
 def _a2a_skill_reference() -> str:
@@ -1581,6 +1597,10 @@ def sanitize_markdown(text: str) -> str:
 
 async def send_message(chat_id: int, text: str, reply_to: int | None = None):
     """Send message, splitting if too long. Falls back from Markdown to plain text."""
+    retired_target = _retired_outbound_handoff_target(text)
+    if retired_target:
+        log.warning("Suppressed outbound A2A handoff to retired target @%s", retired_target)
+        return None
     chunks = []
     remaining = text
     while remaining:
@@ -1612,6 +1632,10 @@ async def send_message(chat_id: int, text: str, reply_to: int | None = None):
 
 async def send_plain_message(chat_id: int, text: str, reply_to: int | None = None):
     """Send one plain-text message without Markdown parsing."""
+    retired_target = _retired_outbound_handoff_target(text)
+    if retired_target:
+        log.warning("Suppressed outbound A2A handoff to retired target @%s", retired_target)
+        return None
     data = {"chat_id": chat_id, "text": text}
     if reply_to:
         data["reply_to_message_id"] = reply_to

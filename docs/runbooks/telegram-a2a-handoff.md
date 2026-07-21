@@ -51,7 +51,6 @@ Current aliases:
 
 - `MacMiniCodex`, `ExampleCodexBot`, `@ExampleCodexBot`
 - `iMacCodex`, `ExampleCodex2Bot`, `@ExampleCodex2Bot`
-- `MacMiniClaude`, `ExampleClaudeBot`, `@ExampleClaudeBot`
 - `iMacClaude`, `ExampleClaude2Bot`, `@ExampleClaude2Bot`
 - `ExampleUtilityBot`, `@ExampleUtilityBot`
 
@@ -68,16 +67,16 @@ rejection messages show the canonical Telegram username to keep examples stable.
 
 ## Examples
 
-MacMiniClaude asking MacMiniCodex to review:
+MacMiniCodex asking iMacCodex to review:
 
 ```text
-/handoff@ExampleCodexBot {"from":"ExampleClaudeBot","to":"ExampleCodexBot","task_id":"663-pr101-risk-review","ttl":1,"requires_response":true,"type":"task","body":"Review PR #101 hardware validation checklist and reply with risks only."}
+/handoff@ExampleCodex2Bot {"from":"ExampleCodexBot","to":"ExampleCodex2Bot","task_id":"663-pr101-risk-review","ttl":1,"requires_response":true,"type":"task","body":"Review PR #101 hardware validation checklist and reply with risks only."}
 ```
 
-MacMiniCodex sending a non-actionable status to MacMiniClaude:
+MacMiniCodex sending a non-actionable status to iMacCodex:
 
 ```text
-/handoff@ExampleClaudeBot {"from":"ExampleCodexBot","to":"ExampleClaudeBot","task_id":"663-pr101-risk-review-status","ttl":1,"requires_response":false,"type":"status","body":"Review complete; no action requested."}
+/handoff@ExampleCodex2Bot {"from":"ExampleCodexBot","to":"ExampleCodex2Bot","task_id":"663-pr101-risk-review-status","ttl":1,"requires_response":false,"type":"status","body":"Review complete; no action requested."}
 ```
 
 The second example should be ignored by the bridge because it is a status with `requires_response=false`.
@@ -89,7 +88,7 @@ Example group:
 - Group chat ID: `-1000000000000`
 - Human admin ID: set per host in `.env`
 - `@ExampleCodexBot`: `1000000001`
-- `@ExampleClaudeBot`: `1000000003`
+- `@ExampleCodex2Bot`: `1000000002`
 
 Recommended runtime configuration:
 
@@ -98,12 +97,15 @@ ALLOWED_USER_IDS=
 ALLOWED_SENDER_IDS=
 ALLOWED_CHAT_IDS=-1000000000000
 A2A_TRUST_REGISTRY_BOTS=true
+A2A_RETIRED_TARGETS=linda,claude,atlas,ellaminibot,macminiclaude
 ```
 
 `A2A_TRUST_REGISTRY_BOTS=true` is the default. It adds trusted bot IDs from
 `services/telegram-a2a/agents.json` to `ALLOWED_BOT_IDS`. Use
 `A2A_TRUST_REGISTRY_BOTS=false` and explicit `ALLOWED_BOT_IDS` for a locked-down
-single-peer deployment.
+single-peer deployment. `A2A_RETIRED_TARGETS` is a final outbound safety guard:
+the bridge drops structured handoffs addressed to any listed retired alias even
+if stale context or an old prompt still names it.
 
 ## Skill Text For Agents
 
