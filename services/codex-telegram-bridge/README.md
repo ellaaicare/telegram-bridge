@@ -13,6 +13,7 @@ It lets one or more approved Telegram users send prompts, images, and files to a
 - Per-folder thread memory in `state.json`
 - Attachment support for images, documents, voice messages, video, and stickers
 - Sequential work queue so only one Codex run is active at a time
+- Human prompts run before pending automation; automated GitHub events are coalesced into bounded batches
 - Queued prompts keep the folder and thread they were sent from, even if you switch folders before they start
 - Watchdog for obviously stuck command executions
 - `GET /health` endpoint for local health checks
@@ -48,6 +49,7 @@ codex-bridge/
 - The bridge runs Codex locally on the host. Treat the allowed Telegram account as equivalent to shell-level operator access for the configured workspace.
 - `.env` is intentionally not committed.
 - HTTP client request logs for Telegram are suppressed so bot tokens are not written into routine logs.
+- Common provider-key and Telegram bot-token patterns are redacted from prompt previews in application logs. Secrets still should not be sent through Telegram.
 
 ## Configuration
 
@@ -79,6 +81,10 @@ ALLOWED_USER_IDS=
 ALLOWED_CHAT_IDS=-1000000000000
 A2A_TRUST_REGISTRY_BOTS=true
 A2A_BOT_REGISTRY_PATH=
+A2A_QUEUE_COALESCE_ENABLED=true
+A2A_QUEUE_COALESCE_SENDERS=n8n-github-router
+A2A_QUEUE_COALESCE_MAX_EVENTS=20
+A2A_QUEUE_COALESCE_MAX_CHARS=50000
 
 CODEX_TIMEOUT=900
 CODEX_MODEL=
@@ -286,7 +292,9 @@ Message the bot and use:
 - `/resume <id|name>` to continue an older thread
 - `/status` to inspect queue, folder, model, and active thread
 - `/watchdog` to inspect current command monitoring
-- `/interrupt` to stop the current Codex run
+- `/interrupt [replacement]` to stop the current Codex run, retain pending work, and optionally run a replacement next
+- `/stop [replacement]` to stop the current run, discard pending work, and optionally run a replacement next
+- `/clearqueue` to discard pending work without stopping the current run
 
 Regular non-command messages are sent to Codex as work prompts.
 
@@ -295,6 +303,10 @@ Queue behavior:
 - Only one Codex run is active at a time.
 - Queued prompts are bound to the folder and thread that were selected when you sent them.
 - If you queue multiple prompts into a fresh thread before the first one starts, they stay attached to that same future thread.
+- Human prompts are inserted ahead of pending automated A2A notifications, but never interrupt active work automatically.
+- Consecutive automated handoffs from configured coalescing senders are combined into one bounded Codex run. Every original task ID still receives a terminal A2A result.
+- Direct agent handoffs and human prompts are never coalesced.
+- `/interrupt` preserves the backlog. `/stop` is the destructive override that clears it.
 
 ## State and Logs
 

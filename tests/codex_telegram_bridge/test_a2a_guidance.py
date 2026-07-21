@@ -9,6 +9,8 @@ def load_bridge_module():
     bridge_path = repo_root / "services" / "codex-telegram-bridge" / "main.py"
     registry_path = repo_root / "services" / "telegram-a2a" / "agents.json"
     os.environ.setdefault("CODEX_BRIDGE_LOG_FILE", "/tmp/codex-telegram-bridge-test.log")
+    os.environ.pop("CODEX_BRIDGE_VERSION", None)
+    os.environ.pop("CODEX_BRIDGE_BUILD", None)
     # Force test registry so live env doesn't leak into tests
     os.environ["A2A_BOT_REGISTRY_PATH"] = str(registry_path)
     spec = importlib.util.spec_from_file_location("codex_telegram_bridge_main", bridge_path)
@@ -44,8 +46,8 @@ def test_allowed_bot_raw_chatter_is_silently_ignored():
 def test_bridge_version_metadata_is_exposed():
     bridge = load_bridge_module()
 
-    assert bridge.BRIDGE_VERSION == "0.2.0"
-    assert bridge.BRIDGE_BUILD == "a2a-noise-harden-pr6.9c8bcef"
+    assert bridge.BRIDGE_VERSION == "0.3.0"
+    assert bridge.BRIDGE_BUILD == "a2a-queue-coalescing-v1"
     assert bridge.app.version == bridge.BRIDGE_VERSION
 
 

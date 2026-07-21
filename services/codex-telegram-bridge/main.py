@@ -15,10 +15,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +34,35 @@ def _parse_int_set(raw: str) -> set[int]:
 
 def _truthy_env(name: str, default: str = "false") -> bool:
     return os.environ.get(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _redact_log_text(raw: str) -> str:
+    text = str(raw or "")
+    text = re.sub(
+        r"(?i)\b([A-Z][A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD))"
+        r"(\s*[:=]\s*)([\"']?)[^\s,;\"'&}]+([\"']?)",
+        r"\1\2[REDACTED_SECRET]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(authorization\s*:\s*bearer|bearer)\s+[A-Za-z0-9._~+/=-]{12,}",
+        r"\1 [REDACTED_BEARER_TOKEN]",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:sk-[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{12,}|xai-[A-Za-z0-9_-]{12,}|"
+        r"AIza[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_-]{20,}|"
+        r"github_pat_[A-Za-z0-9_-]{20,})\b",
+        "[REDACTED_API_KEY]",
+        text,
+    )
+    text = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        "[REDACTED_JWT]",
+        text,
+    )
+    text = re.sub(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", "[REDACTED_BOT_TOKEN]", text)
+    return text
 
 
 def _norm_bot_key(value: str) -> str:
@@ -133,14 +164,12 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 # --- Configuration ---
 
-BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.2.0")
-BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-noise-harden-pr6.9c8bcef")
+BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.3.0")
+BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-queue-coalescing-v1")
 BOT_TOKEN = os.environ.get("CODEX_TELEGRAM_BOT_TOKEN", "")
 A2A_BOT_REGISTRY = _load_a2a_registry()
 ALLOWED_USERS = _parse_int_set(os.environ.get("ALLOWED_USER_IDS", ""))
-ALLOWED_SENDER_IDS = _parse_int_set(
-    os.environ.get("ALLOWED_SENDER_IDS", os.environ.get("ALLOWED_USER_IDS", ""))
-)
+ALLOWED_SENDER_IDS = _parse_int_set(os.environ.get("ALLOWED_SENDER_IDS", os.environ.get("ALLOWED_USER_IDS", "")))
 ALLOWED_BOT_IDS = _parse_int_set(os.environ.get("ALLOWED_BOT_IDS", ""))
 if _truthy_env("A2A_TRUST_REGISTRY_BOTS", "true"):
     ALLOWED_BOT_IDS |= _trusted_registry_bot_ids()
@@ -159,14 +188,25 @@ CODEX_BRIDGE_PORT = int(os.environ.get("CODEX_BRIDGE_PORT", "8110"))
 TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300"))
 A2A_PROGRESS_MODE = os.environ.get("A2A_PROGRESS_MODE", "status").strip().lower()
+A2A_QUEUE_COALESCE_ENABLED = _truthy_env("A2A_QUEUE_COALESCE_ENABLED", "true")
+A2A_QUEUE_COALESCE_SENDERS = {
+    value.strip().lower()
+    for value in os.environ.get("A2A_QUEUE_COALESCE_SENDERS", "n8n-github-router").split(",")
+    if value.strip()
+}
+A2A_QUEUE_COALESCE_MAX_EVENTS = int(os.environ.get("A2A_QUEUE_COALESCE_MAX_EVENTS", "20"))
+A2A_QUEUE_COALESCE_MAX_CHARS = int(os.environ.get("A2A_QUEUE_COALESCE_MAX_CHARS", "50000"))
 A2A_IGNORED = "__a2a_ignored__"
 POLL_TIMEOUT = 60
-STATE_FILE = Path(
-    os.environ.get(
-        "CODEX_BRIDGE_STATE_DIR",
-        str(Path.home() / "codexd" / "services" / "codex-telegram-bridge"),
+STATE_FILE = (
+    Path(
+        os.environ.get(
+            "CODEX_BRIDGE_STATE_DIR",
+            str(Path.home() / "codexd" / "services" / "codex-telegram-bridge"),
+        )
     )
-) / "state.json"
+    / "state.json"
+)
 HOME = os.environ.get("CODEX_DEFAULT_FOLDER", str(Path.home()))
 MEDIA_DIR = Path("/tmp/tg-codex-bridge-media")
 
@@ -247,7 +287,7 @@ def _parse_handoff(raw: str) -> tuple[bool, str]:
         # Not a handoff targeted at us: silently ignore.
         return False, A2A_IGNORED
 
-    payload_text = raw_stripped[len(matched_prefix):].strip()
+    payload_text = raw_stripped[len(matched_prefix) :].strip()
     if not payload_text:
         log.warning("Rejected empty A2A handoff for @%s", BOT_USERNAME)
         return False, ""
@@ -344,7 +384,7 @@ def _validate_handoff_envelope(raw: str, target_username: str) -> tuple[bool, st
     if not matched_prefix:
         return False, f"response must start with /handoff@{canonical_target}"
 
-    json_text = stripped[len(matched_prefix):].strip()
+    json_text = stripped[len(matched_prefix) :].strip()
     if not json_text:
         return False, "response is missing the JSON envelope after the command"
 
@@ -357,9 +397,7 @@ def _validate_handoff_envelope(raw: str, target_username: str) -> tuple[bool, st
         return False, "response JSON envelope must be an object"
 
     missing = [
-        key
-        for key in ("from", "to", "task_id", "ttl", "requires_response", "type", "body")
-        if key not in payload
+        key for key in ("from", "to", "task_id", "ttl", "requires_response", "type", "body") if key not in payload
     ]
     if missing:
         return False, f"response JSON envelope missing required fields: {', '.join(missing)}"
@@ -398,10 +436,69 @@ def _a2a_response_rejection(target_username: str, reason: str) -> str:
 
 
 def _extract_a2a_task_id(prompt: str) -> str:
-    import re
-
     match = re.search(r"task_id=([^,)\s]+)", prompt)
     return match.group(1) if match else f"task-{int(time.time())}"
+
+
+def _extract_a2a_sender(prompt: str) -> str:
+    match = re.match(r"A2A handoff from ([^\s(]+)", prompt.strip())
+    return match.group(1) if match else ""
+
+
+def _coalescible_a2a_event(prompt: str, reply_target: str | None) -> dict | None:
+    if not A2A_QUEUE_COALESCE_ENABLED or not reply_target:
+        return None
+    sender = _extract_a2a_sender(prompt)
+    if sender.lower() not in A2A_QUEUE_COALESCE_SENDERS:
+        return None
+    return {
+        "task_id": _extract_a2a_task_id(prompt),
+        "sender": sender,
+        "prompt": prompt,
+    }
+
+
+def _format_coalesced_a2a_prompt(events: list[dict]) -> str:
+    if len(events) == 1:
+        return events[0]["prompt"]
+
+    lines = [
+        f"Coalesced A2A backlog containing {len(events)} automated GitHub events.",
+        "",
+        "Process these events in chronological order in one run. GitHub is the source of truth: "
+        "read the latest state, deduplicate superseded notifications, perform actionable work once per "
+        "issue or pull request, and post progress/final status there. Do not skip an event merely because "
+        "a later event references the same entity.",
+    ]
+    for index, event in enumerate(events, start=1):
+        lines.extend(
+            [
+                "",
+                f"--- Event {index}/{len(events)} | task_id={event['task_id']} ---",
+                event["prompt"],
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _a2a_response_body(response: str, target_username: str) -> str:
+    stripped = response.strip()
+    matched_prefix = next(
+        (
+            prefix
+            for prefix in _handoff_prefixes_for_target(target_username)
+            if stripped.lower().startswith(prefix.lower())
+        ),
+        "",
+    )
+    if not matched_prefix:
+        return response
+    try:
+        payload = json.loads(stripped[len(matched_prefix) :].strip())
+    except json.JSONDecodeError:
+        return response
+    body = str(payload.get("body") or "").strip() if isinstance(payload, dict) else ""
+    return body or response
 
 
 def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
@@ -419,9 +516,7 @@ def _a2a_status_envelope(target_username: str, task_id: str, body: str) -> str:
     return f"/handoff@{target} {json.dumps(payload, separators=(',', ':'))}"
 
 
-def _a2a_autowrap_result(
-    target_username: str, task_id: str, body: str
-) -> str:
+def _a2a_autowrap_result(target_username: str, task_id: str, body: str) -> str:
     """Wrap a raw agent response in a valid A2A result envelope.
 
     When the agent produces plain text instead of a structured /handoff
@@ -460,7 +555,7 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
         chat_type,
         user_id,
         username,
-        raw[:120] if raw else "[media]",
+        _redact_log_text(raw)[:120] if raw else "[media]",
     )
 
     if BOT_ID and user_id == BOT_ID:
@@ -523,6 +618,94 @@ def should_process_group_message(message: dict, text: str, caption: str) -> tupl
 
 # --- State ---
 
+
+class PromptQueue:
+    """FIFO queue with human priority, bounded A2A batching, and explicit clearing."""
+
+    def __init__(self):
+        self._items = deque()
+        self._condition = asyncio.Condition()
+        self._unfinished_tasks = 0
+
+    def qsize(self) -> int:
+        return len(self._items)
+
+    def event_count(self) -> int:
+        return sum(len(item.get("a2a_events") or [None]) for item in self._items)
+
+    def automated_count(self) -> int:
+        return sum(1 for item in self._items if item.get("automated"))
+
+    def _can_coalesce(self, existing: dict, incoming: dict) -> bool:
+        existing_events = existing.get("a2a_events") or []
+        incoming_events = incoming.get("a2a_events") or []
+        if not existing_events or not incoming_events:
+            return False
+        if existing.get("coalesce_key") != incoming.get("coalesce_key"):
+            return False
+        if len(existing_events) + len(incoming_events) > A2A_QUEUE_COALESCE_MAX_EVENTS:
+            return False
+        total_chars = sum(len(event["prompt"]) for event in existing_events + incoming_events)
+        return total_chars <= A2A_QUEUE_COALESCE_MAX_CHARS
+
+    async def put(self, item: dict, *, front: bool = False) -> dict:
+        async with self._condition:
+            if not front and self._items and self._can_coalesce(self._items[-1], item):
+                existing = self._items[-1]
+                existing["a2a_events"].extend(item["a2a_events"])
+                existing["a2a_task_ids"].extend(item["a2a_task_ids"])
+                existing["text"] = _format_coalesced_a2a_prompt(existing["a2a_events"])
+                log.info(
+                    "Coalesced A2A task_id=%s into queue position %s (%s events)",
+                    item["a2a_task_ids"][0],
+                    len(self._items),
+                    len(existing["a2a_events"]),
+                )
+                return {
+                    "position": len(self._items),
+                    "coalesced": True,
+                    "batch_size": len(existing["a2a_events"]),
+                }
+
+            if front:
+                self._items.appendleft(item)
+                position = 1
+            elif not item.get("automated"):
+                position = len(self._items) + 1
+                for index, pending in enumerate(self._items):
+                    if pending.get("automated"):
+                        self._items.insert(index, item)
+                        position = index + 1
+                        break
+                else:
+                    self._items.append(item)
+            else:
+                self._items.append(item)
+                position = len(self._items)
+
+            self._unfinished_tasks += 1
+            self._condition.notify(1)
+            return {"position": position, "coalesced": False, "batch_size": 1}
+
+    async def get(self) -> dict:
+        async with self._condition:
+            while not self._items:
+                await self._condition.wait()
+            return self._items.popleft()
+
+    def task_done(self):
+        if self._unfinished_tasks <= 0:
+            raise ValueError("task_done() called too many times")
+        self._unfinished_tasks -= 1
+
+    async def clear(self) -> list[dict]:
+        async with self._condition:
+            removed = list(self._items)
+            self._items.clear()
+            self._unfinished_tasks = max(0, self._unfinished_tasks - len(removed))
+            return removed
+
+
 _active_codex_proc: asyncio.subprocess.Process | None = None
 _active_codex_chat_id: int | None = None
 _shutting_down = False
@@ -531,7 +714,7 @@ _watchdog_current_item: dict | None = None
 _watchdog_last_progress: float = 0.0
 _a2a_guidance_last_sent: dict[str, float] = {}
 
-_prompt_queue: asyncio.Queue | None = None
+_prompt_queue: PromptQueue | None = None
 _queue_worker_task: asyncio.Task | None = None
 _queue_last_dequeue: float = 0.0
 _queue_health_task: asyncio.Task | None = None
@@ -660,9 +843,7 @@ _http_client: httpx.AsyncClient | None = None
 async def get_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(POLL_TIMEOUT + 30, connect=10)
-        )
+        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(POLL_TIMEOUT + 30, connect=10))
     return _http_client
 
 
@@ -855,9 +1036,7 @@ async def handle_media_message(chat_id: int, msg_id: int, message: dict, user_te
     if media_type == "image":
         prompt_parts.append("The user sent an image. Inspect it and respond.")
     elif media_type:
-        prompt_parts.append(
-            f"The user sent a {media_type}. A local copy is available in the workspace if needed."
-        )
+        prompt_parts.append(f"The user sent a {media_type}. A local copy is available in the workspace if needed.")
 
     if user_text:
         prompt_parts.append(user_text)
@@ -937,7 +1116,7 @@ def _describe_command_execution(item: dict) -> str:
     command = item.get("command", "")
     if not command:
         return "Running command"
-    return f"Running: `{command[:80]}`"
+    return f"Running: `{_redact_log_text(command)[:80]}`"
 
 
 async def run_codex(
@@ -952,7 +1131,12 @@ async def run_codex(
     global _active_codex_proc, _watchdog_current_item, _watchdog_last_progress
 
     cmd = build_codex_command(prompt, cwd=cwd, session_id=session_id, images=images)
-    log.info("Codex in %s: %s | prompt: %s", cwd, " ".join(cmd[:8]), prompt[:80])
+    log.info(
+        "Codex in %s: %s | prompt: %s",
+        cwd,
+        _redact_log_text(" ".join(cmd[:8])),
+        _redact_log_text(prompt)[:80],
+    )
 
     result_session_id = session_id
     latest_agent_message = None
@@ -1042,9 +1226,7 @@ def _is_instant_kill_command(command: str) -> bool:
     for pattern in WATCHDOG_INSTANT_KILL_PATTERNS:
         if pattern.lower() in cmd_lower:
             return True
-    if "ssh " in cmd_lower and any(
-        p in cmd_lower for p in ["tail -f", "tail --follow", "journalctl -f"]
-    ):
+    if "ssh " in cmd_lower and any(p in cmd_lower for p in ["tail -f", "tail --follow", "journalctl -f"]):
         return True
     return False
 
@@ -1082,7 +1264,7 @@ async def _watchdog_monitor(chat_id: int):
         if command and _is_instant_kill_command(command):
             await _watchdog_kill(
                 chat_id,
-                f"Known infinite command: `{command[:60]}`",
+                f"Known infinite command: `{_redact_log_text(command)[:60]}`",
                 _watchdog_current_item,
             )
             return
@@ -1109,7 +1291,7 @@ async def _watchdog_kill(chat_id: int, reason: str, item_info: dict | None):
         except ProcessLookupError:
             pass
 
-    detail = f"\nCommand: `{command[:100]}`" if command else ""
+    detail = f"\nCommand: `{_redact_log_text(command)[:100]}`" if command else ""
     await send_message(
         chat_id,
         f"*Watchdog killed stuck process*\nReason: {reason}{detail}\n\n"
@@ -1149,7 +1331,9 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 "`/rename <label>` — Rename current thread\n"
                 "`/sessions` — List known threads for this folder\n"
                 "`/resume <id|name>` — Resume a saved thread\n"
-                "`/interrupt [msg]` — Stop the running Codex task\n\n"
+                "`/interrupt [msg]` — Stop the active task; keep queued work\n"
+                "`/stop [msg]` — Stop the active task and discard queued work\n"
+                "`/clearqueue` — Discard queued work without stopping the active task\n\n"
                 "*Status:*\n"
                 "`/status` — Bridge status\n"
                 "`/watchdog` — Watchdog status\n"
@@ -1205,11 +1389,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             if name in state["folders"]:
                 await send_message(chat_id, f"Folder `{name}` already exists.", reply_to=msg_id)
                 return
-            path = (
-                os.path.expanduser(sub_parts[2])
-                if len(sub_parts) >= 3
-                else os.path.join(HOME, "projects", name)
-            )
+            path = os.path.expanduser(sub_parts[2]) if len(sub_parts) >= 3 else os.path.join(HOME, "projects", name)
             os.makedirs(path, exist_ok=True)
             state["folders"][name] = path
             state["active_folder"] = path
@@ -1267,7 +1447,11 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             return
         clone_parts = arg.split(maxsplit=1)
         repo_url = clone_parts[0]
-        name = clone_parts[1].strip() if len(clone_parts) >= 2 else repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
+        name = (
+            clone_parts[1].strip()
+            if len(clone_parts) >= 2
+            else repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
+        )
         clone_path = os.path.join(HOME, "projects", name)
         if name in state["folders"] or os.path.exists(clone_path):
             await send_message(chat_id, f"Target already exists: `{clone_path}`", reply_to=msg_id)
@@ -1406,11 +1590,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
     if cmd == "/sessions":
         folder = state["active_folder"]
         folder_name = get_folder_display_name(folder)
-        items = [
-            (sid, info)
-            for sid, info in state["sessions"].items()
-            if info.get("folder", HOME) == folder
-        ]
+        items = [(sid, info) for sid, info in state["sessions"].items() if info.get("folder", HOME) == folder]
         items.sort(key=lambda x: x[1].get("last_used", ""), reverse=True)
         if not items:
             await send_message(chat_id, f"No known threads in `{folder_name}`.", reply_to=msg_id)
@@ -1455,6 +1635,8 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         inv = state.get("last_invocation")
         sid = state.get("default_session_id")
         queue_size = _prompt_queue.qsize() if _prompt_queue else 0
+        queue_events = _prompt_queue.event_count() if _prompt_queue else 0
+        automated_runs = _prompt_queue.automated_count() if _prompt_queue else 0
         busy = _active_codex_proc is not None and _active_codex_proc.returncode is None
         lines = [
             "*Bridge Status*",
@@ -1463,7 +1645,10 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
             f"Folder: `{get_folder_display_name(state['active_folder'])}` (`{state['active_folder']}`)",
             f"Folders: {len(state.get('folders', {}))} registered",
             f"Threads: {len(state.get('sessions', {}))} tracked",
-            f"Queue: {queue_size} pending | {'busy' if busy else 'idle'}",
+            (
+                f"Queue: {queue_size} runs / {queue_events} events pending "
+                f"({automated_runs} automated) | {'busy' if busy else 'idle'}"
+            ),
             f"Model: `{CODEX_MODEL or 'default'}`",
             f"Sandbox: `{CODEX_SANDBOX}`",
         ]
@@ -1493,9 +1678,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         elif item:
             elapsed = time.time() - item["started"]
             text_out = (
-                f"Watchdog: *active*\n"
-                f"Command: `{item.get('command', '')[:120]}`\n"
-                f"Running: {elapsed:.0f}s"
+                f"Watchdog: *active*\n" f"Command: `{item.get('command', '')[:120]}`\n" f"Running: {elapsed:.0f}s"
             )
         else:
             worker_alive = _queue_worker_task is not None and not _queue_worker_task.done()
@@ -1508,25 +1691,91 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         await send_message(chat_id, text_out, reply_to=msg_id)
         return
 
-    if cmd in ("/interrupt", "/stop"):
-        await cmd_interrupt(chat_id, msg_id, arg)
+    if cmd == "/interrupt":
+        await cmd_interrupt(chat_id, msg_id, arg, clear_pending=False)
+        return
+
+    if cmd == "/stop":
+        await cmd_interrupt(chat_id, msg_id, arg, clear_pending=True)
+        return
+
+    if cmd == "/clearqueue":
+        await cmd_clear_queue(chat_id, msg_id)
         return
 
     await enqueue_prompt(chat_id, msg_id, text)
 
 
-async def cmd_interrupt(chat_id: int, msg_id: int, args: str):
-    if _active_codex_proc is None:
+async def cmd_clear_queue(chat_id: int, msg_id: int) -> tuple[int, int]:
+    removed = await _prompt_queue.clear() if _prompt_queue else []
+    await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /clearqueue.")
+    event_count = sum(len(item.get("a2a_events") or [None]) for item in removed)
+    await send_message(
+        chat_id,
+        f"Cleared {len(removed)} queued runs ({event_count} events).",
+        reply_to=msg_id,
+    )
+    return len(removed), event_count
+
+
+async def _notify_terminal_a2a_items(items: list[dict], reason: str):
+    for item in items:
+        target = item.get("a2a_reply_target")
+        if not target:
+            continue
+        terminal_task_ids = item.setdefault("terminal_a2a_task_ids", set())
+        for task_id in item.get("a2a_task_ids") or []:
+            if task_id in terminal_task_ids:
+                continue
+            try:
+                await send_plain_message(
+                    item["chat_id"],
+                    _a2a_autowrap_result(target, task_id, reason),
+                    reply_to=item.get("msg_id"),
+                )
+            except Exception as exc:
+                log.error(
+                    "Failed to send terminal A2A result task_id=%s: %s",
+                    task_id,
+                    _redact_log_text(str(exc)),
+                )
+                continue
+            terminal_task_ids.add(task_id)
+
+
+async def cmd_interrupt(
+    chat_id: int,
+    msg_id: int,
+    args: str,
+    *,
+    clear_pending: bool,
+):
+    removed = []
+    if clear_pending and _prompt_queue:
+        removed = await _prompt_queue.clear()
+        await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /stop.")
+
+    active = _active_codex_proc is not None and _active_codex_proc.returncode is None
+    if active:
+        suffix = f" and cleared {len(removed)} queued runs" if clear_pending else ""
+        await send_message(chat_id, f"_Interrupting active task{suffix}..._", reply_to=msg_id)
+        try:
+            _active_codex_proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    elif clear_pending:
+        event_count = sum(len(item.get("a2a_events") or [None]) for item in removed)
+        await send_message(
+            chat_id,
+            f"No active task. Cleared {len(removed)} queued runs ({event_count} events).",
+            reply_to=msg_id,
+        )
+    else:
         await send_message(chat_id, "Nothing running to interrupt.", reply_to=msg_id)
-        return
-    await send_message(chat_id, "_Interrupting..._", reply_to=msg_id)
-    try:
-        _active_codex_proc.send_signal(signal.SIGINT)
-    except ProcessLookupError:
-        pass
+
     follow_up = args.strip()
     if follow_up:
-        await enqueue_prompt(chat_id, msg_id, follow_up)
+        await enqueue_prompt(chat_id, msg_id, follow_up, front=True)
 
 
 async def enqueue_prompt(
@@ -1535,10 +1784,11 @@ async def enqueue_prompt(
     text: str,
     images: list[str] | None = None,
     a2a_reply_target: str | None = None,
+    front: bool = False,
 ):
     global _prompt_queue
     if _prompt_queue is None:
-        _prompt_queue = asyncio.Queue()
+        _prompt_queue = PromptQueue()
     folder = state["active_folder"]
     session_id = state.get("default_session_id")
     context_id = None
@@ -1549,24 +1799,47 @@ async def enqueue_prompt(
         pending_label = context.get("label")
         if pending_label:
             context["label"] = None
-    queue_size = _prompt_queue.qsize()
-    await _prompt_queue.put(
-        {
-            "chat_id": chat_id,
-            "msg_id": msg_id,
-            "text": text,
-            "images": images or [],
-            "folder": folder,
-            "session_id": session_id,
-            "context_id": context_id,
-            "pending_label": pending_label,
-            "a2a_reply_target": a2a_reply_target,
-        }
-    )
-    if queue_size > 0:
+    a2a_event = _coalescible_a2a_event(text, a2a_reply_target)
+    item = {
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+        "text": text,
+        "images": images or [],
+        "folder": folder,
+        "session_id": session_id,
+        "context_id": context_id,
+        "pending_label": pending_label,
+        "a2a_reply_target": a2a_reply_target,
+        "automated": a2a_reply_target is not None,
+        "a2a_events": [a2a_event] if a2a_event else [],
+        "a2a_task_ids": [_extract_a2a_task_id(text)] if a2a_reply_target else [],
+        "coalesce_key": (
+            (
+                chat_id,
+                folder,
+                session_id,
+                context_id,
+                a2a_reply_target,
+                a2a_event["sender"].lower(),
+            )
+            if a2a_event
+            else None
+        ),
+    }
+    result = await _prompt_queue.put(item, front=front)
+    position = result["position"]
+    if a2a_reply_target:
+        log.info(
+            "Queued A2A task_id=%s position=%s coalesced=%s batch_size=%s",
+            item["a2a_task_ids"][0],
+            position,
+            result["coalesced"],
+            result["batch_size"],
+        )
+    elif position > 1:
         await send_message(
             chat_id,
-            f"Queued (position {queue_size + 1}). Working on previous task...",
+            f"Queued (position {position}). Working on previous task...",
             reply_to=msg_id,
         )
     else:
@@ -1576,7 +1849,7 @@ async def enqueue_prompt(
 async def queue_worker():
     global _prompt_queue, _queue_last_dequeue
     if _prompt_queue is None:
-        _prompt_queue = asyncio.Queue()
+        _prompt_queue = PromptQueue()
     log.info("Queue worker started")
     while not _shutting_down:
         try:
@@ -1592,11 +1865,26 @@ async def queue_worker():
         _queue_last_dequeue = time.time()
         try:
             await _process_prompt(item)
+        except asyncio.CancelledError:
+            await _notify_terminal_a2a_items(
+                [item],
+                "Cancelled before completion by bridge worker shutdown. Retry from GitHub source of truth.",
+            )
+            raise
         except Exception as e:
-            log.error("Queue worker error: %s", e)
+            safe_error = _redact_log_text(str(e))
+            log.error("Queue worker error: %s", safe_error)
             chat_id = item["chat_id"]
             msg_id = item["msg_id"]
-            await send_message(chat_id, f"Error processing message: {e}", reply_to=msg_id)
+            try:
+                await send_message(chat_id, f"Error processing message: {safe_error}", reply_to=msg_id)
+            except Exception as notify_error:
+                log.error("Failed to send queue error message: %s", _redact_log_text(str(notify_error)))
+            await _notify_terminal_a2a_items(
+                [item],
+                f"Bridge processing failed before completion ({type(e).__name__}). "
+                "Retry from GitHub source of truth.",
+            )
         finally:
             _prompt_queue.task_done()
 
@@ -1614,9 +1902,7 @@ async def _queue_health_monitor():
         codex_active = _active_codex_proc is not None and _active_codex_proc.returncode is None
         if codex_active:
             continue
-        time_since_dequeue = (
-            time.time() - _queue_last_dequeue if _queue_last_dequeue > 0 else float("inf")
-        )
+        time_since_dequeue = time.time() - _queue_last_dequeue if _queue_last_dequeue > 0 else float("inf")
         if time_since_dequeue < stall_threshold:
             continue
         pending = _prompt_queue.qsize()
@@ -1656,6 +1942,7 @@ async def _process_prompt(item: dict):
     context_id = item["context_id"]
     pending_label = item["pending_label"]
     a2a_reply_target = item.get("a2a_reply_target")
+    a2a_task_ids = item.get("a2a_task_ids") or []
 
     _active_codex_chat_id = chat_id
     _watchdog_current_item = None
@@ -1670,13 +1957,14 @@ async def _process_prompt(item: dict):
     try:
         start = time.time()
         if a2a_reply_target and A2A_PROGRESS_MODE in {"status", "structured"}:
-            task_id = _extract_a2a_task_id(text)
+            task_id = a2a_task_ids[0] if a2a_task_ids else _extract_a2a_task_id(text)
+            batch_suffix = f" Batch contains {len(a2a_task_ids)} events." if len(a2a_task_ids) > 1 else ""
             await send_plain_message(
                 chat_id,
                 _a2a_status_envelope(
                     a2a_reply_target,
                     task_id,
-                    "Accepted. Working silently; final response will be a structured A2A result.",
+                    "Accepted. Working silently; final response will be a structured A2A result." + batch_suffix,
                 ),
                 reply_to=msg_id,
             )
@@ -1729,16 +2017,25 @@ async def _process_prompt(item: dict):
                 # Auto-wrap it into a valid A2A result so the requester
                 # still receives the work product (see issue #6).
                 task_id = _extract_a2a_task_id(text)
-                response = _a2a_autowrap_result(
-                    a2a_reply_target, task_id, response
-                )
+                response = _a2a_autowrap_result(a2a_reply_target, task_id, response)
                 log.info(
                     "Auto-wrapped raw A2A response to @%s (reason: %s)",
                     a2a_reply_target,
                     reason,
                 )
-        if a2a_reply_target:
+        if a2a_reply_target and len(a2a_task_ids) > 1:
+            response_body = _a2a_response_body(response, a2a_reply_target)
+            for task_id in a2a_task_ids:
+                await send_plain_message(
+                    chat_id,
+                    _a2a_autowrap_result(a2a_reply_target, task_id, response_body),
+                    reply_to=msg_id,
+                )
+                item.setdefault("terminal_a2a_task_ids", set()).add(task_id)
+        elif a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
+            if a2a_task_ids:
+                item.setdefault("terminal_a2a_task_ids", set()).add(a2a_task_ids[0])
         else:
             await send_message(chat_id, response, reply_to=msg_id)
     finally:
@@ -1827,13 +2124,11 @@ async def poll_loop():
                 if not should_process:
                     continue
 
-                has_media = any(
-                    k in message for k in ("photo", "document", "voice", "video_note", "video", "sticker")
-                )
+                has_media = any(k in message for k in ("photo", "document", "voice", "video_note", "video", "sticker"))
                 if not text and not caption and not has_media:
                     continue
 
-                log.info("Message from %s: %s", user_id, (text or caption or "[media]")[:80])
+                log.info("Message from %s: %s", user_id, _redact_log_text(text or caption or "[media]")[:80])
 
                 if text and text.startswith("/"):
                     asyncio.create_task(handle_command(chat_id, msg_id, text))
@@ -1883,7 +2178,7 @@ async def startup():
     save_state()
 
     global _prompt_queue, _queue_worker_task, _queue_health_task
-    _prompt_queue = asyncio.Queue()
+    _prompt_queue = PromptQueue()
     _queue_worker_task = asyncio.create_task(queue_worker())
     _queue_health_task = asyncio.create_task(_queue_health_monitor())
     asyncio.create_task(poll_loop())
@@ -1911,6 +2206,7 @@ async def shutdown():
 @app.get("/health")
 async def health():
     sid = state.get("default_session_id")
+    queue_runs = _prompt_queue.qsize() if _prompt_queue else 0
     return {
         "status": "ok",
         "service": "codex-telegram-bridge",
@@ -1923,6 +2219,12 @@ async def health():
         "session_count": len(state.get("sessions", {})),
         "codex_model": CODEX_MODEL or "default",
         "codex_reasoning_effort": CODEX_REASONING_EFFORT or "default",
+        "queue": {
+            "runs": queue_runs,
+            "events": _prompt_queue.event_count() if _prompt_queue else 0,
+            "automated_runs": _prompt_queue.automated_count() if _prompt_queue else 0,
+            "busy": _active_codex_proc is not None and _active_codex_proc.returncode is None,
+        },
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
