@@ -195,3 +195,106 @@ printf '{"status":"ok","queue":{"busy":false,"runs":0,"events":0,"unfinished_run
     assert result.returncode == 3
     assert "no restart performed" in result.stderr
     assert all("kickstart" not in call for call in calls.read_text().splitlines())
+
+
+def test_idle_restart_helper_fails_closed_for_legacy_health_by_default(tmp_path):
+    calls = tmp_path / "calls"
+    fake_launchctl = tmp_path / "launchctl"
+    fake_curl = tmp_path / "curl"
+    write_executable(
+        fake_launchctl,
+        """#!/bin/bash
+echo "$*" >> "$CALLS_FILE"
+if [[ "$1" == "list" ]]; then
+  printf '101\\t0\\tcom.ella.codex-bridge\\n'
+elif [[ "$1" == "kickstart" ]]; then
+  exit 99
+fi
+""",
+    )
+    write_executable(
+        fake_curl,
+        """#!/bin/bash
+printf '{"status":"ok","queue":{"busy":false,"runs":0,"events":0}}\\n'
+""",
+    )
+    env = os.environ | {
+        "LAUNCHCTL_BIN": str(fake_launchctl),
+        "CURL_BIN": str(fake_curl),
+        "CALLS_FILE": str(calls),
+    }
+
+    result = subprocess.run(
+        [str(RESTART_SCRIPT), "--timeout", "0", "--poll", "0"],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 3
+    assert "no restart performed" in result.stderr
+    assert all("kickstart" not in call for call in calls.read_text().splitlines())
+
+
+def test_legacy_migration_requires_stable_idle_and_current_schema_after_restart(tmp_path):
+    calls = tmp_path / "calls"
+    curl_count = tmp_path / "curl-count"
+    fake_launchctl = tmp_path / "launchctl"
+    fake_curl = tmp_path / "curl"
+    write_executable(
+        fake_launchctl,
+        """#!/bin/bash
+echo "launchctl $*" >> "$CALLS_FILE"
+if [[ "$1" == "list" ]]; then
+  printf '101\\t0\\tcom.ella.codex-bridge\\n'
+elif [[ "$1" != "kickstart" ]]; then
+  exit 9
+fi
+""",
+    )
+    write_executable(
+        fake_curl,
+        """#!/bin/bash
+count=0
+[[ -f "$CURL_COUNT_FILE" ]] && count=$(cat "$CURL_COUNT_FILE")
+count=$((count + 1))
+echo "$count" > "$CURL_COUNT_FILE"
+echo "curl $count" >> "$CALLS_FILE"
+if [[ "$count" -le "3" ]]; then
+  printf '{"status":"ok","queue":{"busy":false,"runs":0,"events":0}}\\n'
+else
+  printf '{"status":"ok","queue":{"busy":false,"runs":0,"events":0,"unfinished_runs":0}}\\n'
+fi
+""",
+    )
+    env = os.environ | {
+        "LAUNCHCTL_BIN": str(fake_launchctl),
+        "CURL_BIN": str(fake_curl),
+        "CALLS_FILE": str(calls),
+        "CURL_COUNT_FILE": str(curl_count),
+    }
+
+    result = subprocess.run(
+        [
+            str(RESTART_SCRIPT),
+            "--allow-legacy-health",
+            "--timeout",
+            "1",
+            "--poll",
+            "0",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Legacy health schema remained empty for 3 checks" in result.stderr
+    assert calls.read_text().splitlines() == [
+        "launchctl list",
+        "curl 1",
+        "curl 2",
+        "curl 3",
+        f"launchctl kickstart -k gui/{os.getuid()}/com.ella.codex-bridge",
+        "curl 4",
+    ]

@@ -10,6 +10,8 @@ SERVICE_LABEL="com.ella.codex-bridge"
 PORT="8110"
 TIMEOUT_SECONDS="900"
 POLL_SECONDS="5"
+ALLOW_LEGACY_HEALTH="false"
+LEGACY_IDLE_CHECKS="3"
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,8 @@ Options:
   --port PORT           local health endpoint port (default: 8110)
   --timeout SECONDS     stop waiting without restarting (default: 900)
   --poll SECONDS        health polling interval (default: 5)
+  --allow-legacy-health one-time migration for a pre-unfinished_runs bridge;
+                        requires three consecutive empty health responses
   -h, --help            show this help
 EOF
 }
@@ -32,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="${2:-}"; shift 2 ;;
     --timeout) TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
     --poll) POLL_SECONDS="${2:-}"; shift 2 ;;
+    --allow-legacy-health) ALLOW_LEGACY_HEALTH="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -58,7 +63,7 @@ fi
 health_url="http://127.0.0.1:${PORT}/health"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 
-is_idle() {
+health_state() {
   "${CURL_BIN}" -fsS --max-time 2 "${health_url}" 2>/dev/null | "${PYTHON_BIN}" -c '
 import json
 import sys
@@ -68,18 +73,41 @@ try:
 except Exception:
     raise SystemExit(1)
 queue = payload.get("queue") or {}
-idle = (
+base_idle = (
     payload.get("status") == "ok"
     and not queue.get("busy", True)
     and int(queue.get("runs", 1)) == 0
     and int(queue.get("events", 1)) == 0
-    and int(queue.get("unfinished_runs", 1)) == 0
 )
-raise SystemExit(0 if idle else 1)
-' >/dev/null 2>&1
+if not base_idle:
+    raise SystemExit(1)
+if "unfinished_runs" in queue:
+    if int(queue["unfinished_runs"]) != 0:
+        raise SystemExit(1)
+    print("idle")
+elif sys.argv[1] == "true":
+    print("legacy-idle")
+else:
+    raise SystemExit(1)
+' "${ALLOW_LEGACY_HEALTH}" 2>/dev/null
 }
 
-while ! is_idle; do
+legacy_idle_count=0
+while true; do
+  state="$(health_state || true)"
+  if [[ "${state}" == "idle" ]]; then
+    break
+  fi
+  if [[ "${state}" == "legacy-idle" ]]; then
+    legacy_idle_count=$((legacy_idle_count + 1))
+    if (( legacy_idle_count >= LEGACY_IDLE_CHECKS )); then
+      printf 'Legacy health schema remained empty for %s checks; performing one migration restart.\n' \
+        "${LEGACY_IDLE_CHECKS}" >&2
+      break
+    fi
+  else
+    legacy_idle_count=0
+  fi
   if (( $(date +%s) >= deadline )); then
     printf 'Timed out waiting for %s on port %s to become idle; no restart performed.\n' \
       "${SERVICE_LABEL}" "${PORT}" >&2
@@ -92,7 +120,18 @@ printf 'Queue idle; restarting %s exactly once.\n' "${SERVICE_LABEL}"
 "${LAUNCHCTL_BIN}" kickstart -k "gui/$(id -u)/${SERVICE_LABEL}"
 
 health_deadline=$(( $(date +%s) + 60 ))
-while ! "${CURL_BIN}" -fsS --max-time 2 "${health_url}" >/dev/null 2>&1; do
+while ! "${CURL_BIN}" -fsS --max-time 2 "${health_url}" 2>/dev/null | "${PYTHON_BIN}" -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+queue = payload.get("queue") or {}
+current = payload.get("status") == "ok" and "unfinished_runs" in queue
+raise SystemExit(0 if current else 1)
+' >/dev/null 2>&1; do
   if (( $(date +%s) >= health_deadline )); then
     printf '%s did not become healthy within 60 seconds.\n' "${SERVICE_LABEL}" >&2
     exit 4
