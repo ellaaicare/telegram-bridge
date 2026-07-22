@@ -117,3 +117,42 @@ def test_idle_restart_helper_rejects_unsafe_service_label():
 
     assert result.returncode == 2
     assert "Invalid launchd service label" in result.stderr
+
+
+def test_idle_restart_helper_times_out_without_kickstart_when_runs_are_pending(tmp_path):
+    calls = tmp_path / "calls"
+    fake_launchctl = tmp_path / "launchctl"
+    fake_curl = tmp_path / "curl"
+    write_executable(
+        fake_launchctl,
+        """#!/bin/bash
+echo "$*" >> "$CALLS_FILE"
+if [[ "$1" == "list" ]]; then
+  printf '101\\t0\\tcom.ella.codex-bridge\\n'
+elif [[ "$1" == "kickstart" ]]; then
+  exit 99
+fi
+""",
+    )
+    write_executable(
+        fake_curl,
+        """#!/bin/bash
+printf '{"status":"ok","queue":{"busy":false,"runs":1,"events":1}}\\n'
+""",
+    )
+    env = os.environ | {
+        "LAUNCHCTL_BIN": str(fake_launchctl),
+        "CURL_BIN": str(fake_curl),
+        "CALLS_FILE": str(calls),
+    }
+
+    result = subprocess.run(
+        [str(RESTART_SCRIPT), "--timeout", "0", "--poll", "0"],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 3
+    assert "no restart performed" in result.stderr
+    assert all("kickstart" not in call for call in calls.read_text().splitlines())
