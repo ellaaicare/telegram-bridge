@@ -65,6 +65,17 @@ def test_force_new_is_explicit_checkpoint_bypass(tmp_path):
     assert any("bypassed" in message.lower() for message in sent)
 
 
+def test_force_compact_is_explicit_checkpoint_bypass(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    sent = configure(bridge, tmp_path)
+
+    asyncio.run(bridge.handle_command(1, 2, "/compact force"))
+
+    assert bridge.state["default_session_id"] is None
+    assert bridge._prompt_queue.qsize() == 0
+    assert any("bypassed" in message.lower() for message in sent)
+
+
 def test_queued_prompt_keeps_its_project_and_does_not_inherit_other_folder_session(tmp_path):
     bridge = load_bridge_module(tmp_path)
     configure(bridge, tmp_path)

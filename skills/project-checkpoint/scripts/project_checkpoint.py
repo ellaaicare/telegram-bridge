@@ -18,6 +18,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
+MAX_CAPSULE_BYTES = 512 * 1024
 REQUIRED_TOP_LEVEL = {
     "schema_version",
     "checkpoint_id",
@@ -336,8 +337,14 @@ def validate_capsule(capsule: dict[str, Any], *, require_complete: bool = True) 
 def _load_capsule(path: str | Path) -> dict[str, Any]:
     source = Path(path).expanduser().resolve()
     try:
+        if source.stat().st_size > MAX_CAPSULE_BYTES:
+            raise CheckpointError(
+                f"checkpoint exceeds {MAX_CAPSULE_BYTES} byte safety limit: {source}"
+            )
         with source.open(encoding="utf-8") as handle:
             value = json.load(handle)
+    except CheckpointError:
+        raise
     except (OSError, json.JSONDecodeError) as exc:
         raise CheckpointError(f"could not read checkpoint {source}: {exc}") from exc
     if not isinstance(value, dict):

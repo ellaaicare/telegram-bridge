@@ -155,3 +155,12 @@ def test_validator_rejects_deterministic_snapshot_tampering(tmp_path):
 
     with pytest.raises(module.CheckpointError, match="snapshot was modified"):
         module.validate_capsule(capsule)
+
+
+def test_loader_rejects_oversized_capsule(tmp_path):
+    module = load_module()
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x" * (module.MAX_CAPSULE_BYTES + 1))
+
+    with pytest.raises(module.CheckpointError, match="safety limit"):
+        module._load_capsule(oversized)

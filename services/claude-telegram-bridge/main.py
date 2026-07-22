@@ -3426,6 +3426,19 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         return
 
     if cmd == "/compact":
+        force, label = _parse_new_argument(arg)
+        folder = state["active_folder"]
+        if force or not PROJECT_CHECKPOINT_ENABLED:
+            state["checkpoint_rotations"].pop(folder, None)
+            state["pending_checkpoint_bootstrap"].pop(folder, None)
+            _rotate_harness_session(folder, label)
+            reason = "Checkpoint bypassed by force." if force else "Checkpointing is disabled."
+            await send_message(
+                chat_id,
+                f"Fresh session in `{get_folder_display_name(folder)}`. {reason}",
+                reply_to=msg_id,
+            )
+            return
         await enqueue_checkpoint(
             chat_id,
             msg_id,
