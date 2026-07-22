@@ -104,3 +104,61 @@ def test_successful_checkpoint_rotates_and_schedules_bootstrap(tmp_path):
     assert bridge.state["default_session_id"] is None
     assert bridge.state["pending_checkpoint_bootstrap"][str(tmp_path)].endswith("latest.json")
     assert str(tmp_path) not in bridge.state["checkpoint_rotations"]
+
+
+def test_clearqueue_cancels_rotation_and_allows_second_guarded_new(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+
+    async def exercise():
+        await bridge.handle_command(1, 2, "/new first task")
+        first_rotation_id = bridge.state["checkpoint_rotations"][str(tmp_path)]["id"]
+        await bridge.handle_command(1, 3, "/clearqueue")
+        await bridge.handle_command(1, 4, "/new second task")
+        return first_rotation_id, await bridge._prompt_queue.get()
+
+    first_rotation_id, queued = asyncio.run(exercise())
+
+    current = bridge.state["checkpoint_rotations"][str(tmp_path)]
+    assert current["id"] != first_rotation_id
+    assert current["label"] == "second task"
+    assert queued["checkpoint_rotation_id"] == current["id"]
+
+
+def test_stop_cancels_rotation_and_allows_second_guarded_new(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+
+    async def exercise():
+        await bridge.handle_command(1, 2, "/new first task")
+        first_rotation_id = bridge.state["checkpoint_rotations"][str(tmp_path)]["id"]
+        await bridge.handle_command(1, 3, "/stop")
+        await bridge.handle_command(1, 4, "/new second task")
+        return first_rotation_id, await bridge._prompt_queue.get()
+
+    first_rotation_id, queued = asyncio.run(exercise())
+
+    current = bridge.state["checkpoint_rotations"][str(tmp_path)]
+    assert current["id"] != first_rotation_id
+    assert current["label"] == "second task"
+    assert queued["checkpoint_rotation_id"] == current["id"]
+
+
+def test_cancelled_stale_checkpoint_does_not_clear_newer_rotation(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+
+    async def exercise():
+        await bridge.handle_command(1, 2, "/new first task")
+        bridge.state["checkpoint_rotations"][str(tmp_path)] = {
+            "id": "newer-rotation",
+            "label": "newer task",
+        }
+        await bridge.handle_command(1, 3, "/clearqueue")
+
+    asyncio.run(exercise())
+
+    assert bridge.state["checkpoint_rotations"][str(tmp_path)] == {
+        "id": "newer-rotation",
+        "label": "newer task",
+    }
