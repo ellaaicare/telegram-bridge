@@ -652,6 +652,10 @@ class PromptQueue:
     def automated_count(self) -> int:
         return sum(1 for item in self._items if item.get("automated"))
 
+    def unfinished_count(self) -> int:
+        """Return queued plus dequeued work that has not reached task_done()."""
+        return self._unfinished_tasks
+
     def _can_coalesce(self, existing: dict, incoming: dict) -> bool:
         existing_events = existing.get("a2a_events") or []
         incoming_events = incoming.get("a2a_events") or []
@@ -2247,6 +2251,7 @@ async def health():
             "runs": queue_runs,
             "events": _prompt_queue.event_count() if _prompt_queue else 0,
             "automated_runs": _prompt_queue.automated_count() if _prompt_queue else 0,
+            "unfinished_runs": _prompt_queue.unfinished_count() if _prompt_queue else 0,
             "busy": _active_codex_proc is not None and _active_codex_proc.returncode is None,
         },
         "last_invocation": state.get("last_invocation"),

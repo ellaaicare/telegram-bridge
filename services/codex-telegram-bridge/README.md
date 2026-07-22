@@ -214,6 +214,12 @@ submitted jobs can remain registered and relaunch after a successful exit,
 creating a restart loop. On macOS, bridge startup also removes the historical
 `restart-once`, `force-restart-once`, and `retired-target-reload` job labels.
 
+The helper fails closed unless `/health` reports `unfinished_runs: 0`. During
+the one-time rollout from a bridge version that predates that field, quiesce
+incoming traffic and add `--allow-legacy-health`. That mode requires three
+consecutive empty legacy responses and then verifies the restarted process
+serves the current health schema. Do not use it for routine restarts.
+
 ## Linux Deployment with systemd
 
 The repository includes a sample unit at `systemd/codex-telegram-bridge.service`.
