@@ -51,14 +51,15 @@ fi
     assert "com.ella.codex-bridge.ios" not in result.stderr
 
 
-def test_idle_restart_helper_kickstarts_once_without_submitting_job(tmp_path):
+def test_idle_restart_helper_waits_for_empty_queue_then_kickstarts_once(tmp_path):
     calls = tmp_path / "calls"
+    curl_count = tmp_path / "curl-count"
     fake_launchctl = tmp_path / "launchctl"
     fake_curl = tmp_path / "curl"
     write_executable(
         fake_launchctl,
         """#!/bin/bash
-echo "$*" >> "$CALLS_FILE"
+echo "launchctl $*" >> "$CALLS_FILE"
 if [[ "$1" == "list" ]]; then
   printf '101\\t0\\tcom.ella.codex-bridge\\n'
 elif [[ "$1" != "kickstart" ]]; then
@@ -69,13 +70,23 @@ fi
     write_executable(
         fake_curl,
         """#!/bin/bash
-printf '{"status":"ok","queue":{"busy":false}}\\n'
+count=0
+[[ -f "$CURL_COUNT_FILE" ]] && count=$(cat "$CURL_COUNT_FILE")
+count=$((count + 1))
+echo "$count" > "$CURL_COUNT_FILE"
+echo "curl $count" >> "$CALLS_FILE"
+if [[ "$count" == "1" ]]; then
+  printf '{"status":"ok","queue":{"busy":false,"runs":1,"events":2}}\\n'
+else
+  printf '{"status":"ok","queue":{"busy":false,"runs":0,"events":0}}\\n'
+fi
 """,
     )
     env = os.environ | {
         "LAUNCHCTL_BIN": str(fake_launchctl),
         "CURL_BIN": str(fake_curl),
         "CALLS_FILE": str(calls),
+        "CURL_COUNT_FILE": str(curl_count),
     }
 
     result = subprocess.run(
@@ -86,10 +97,15 @@ printf '{"status":"ok","queue":{"busy":false}}\\n'
     )
 
     assert result.returncode == 0, result.stderr
-    launchctl_calls = calls.read_text().splitlines()
-    assert launchctl_calls.count("list") == 1
-    assert sum(call.startswith("kickstart -k gui/") for call in launchctl_calls) == 1
-    assert all("submit" not in call for call in launchctl_calls)
+    operation_calls = calls.read_text().splitlines()
+    assert operation_calls == [
+        "launchctl list",
+        "curl 1",
+        "curl 2",
+        f"launchctl kickstart -k gui/{os.getuid()}/com.ella.codex-bridge",
+        "curl 3",
+    ]
+    assert all("submit" not in call for call in operation_calls)
 
 
 def test_idle_restart_helper_rejects_unsafe_service_label():
