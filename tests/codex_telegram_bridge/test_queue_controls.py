@@ -167,6 +167,27 @@ def test_coalescing_starts_a_new_batch_at_configured_event_limit():
     assert bridge._prompt_queue.event_count() == 3
 
 
+def test_health_reports_dequeued_run_as_unfinished_until_task_done():
+    bridge = load_bridge_module()
+    configure_queue(bridge)
+
+    async def exercise():
+        await bridge._prompt_queue.put({"text": "work"})
+        item = await bridge._prompt_queue.get()
+        during = await bridge.health()
+        bridge._prompt_queue.task_done()
+        after = await bridge.health()
+        return item, during, after
+
+    item, during, after = asyncio.run(exercise())
+
+    assert item["text"] == "work"
+    assert during["queue"]["runs"] == 0
+    assert during["queue"]["busy"] is False
+    assert during["queue"]["unfinished_runs"] == 1
+    assert after["queue"]["unfinished_runs"] == 0
+
+
 def test_stop_interrupts_active_run_clears_backlog_and_prioritizes_replacement():
     bridge = load_bridge_module()
     sent = configure_queue(bridge)

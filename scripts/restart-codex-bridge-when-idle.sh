@@ -73,6 +73,7 @@ idle = (
     and not queue.get("busy", True)
     and int(queue.get("runs", 0)) == 0
     and int(queue.get("events", 0)) == 0
+    and int(queue["unfinished_runs"]) == 0
 )
 raise SystemExit(0 if idle else 1)
 ' >/dev/null 2>&1

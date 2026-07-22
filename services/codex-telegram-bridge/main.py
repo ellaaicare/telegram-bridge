@@ -646,6 +646,9 @@ class PromptQueue:
     def qsize(self) -> int:
         return len(self._items)
 
+    def unfinished_count(self) -> int:
+        return self._unfinished_tasks
+
     def event_count(self) -> int:
         return sum(len(item.get("a2a_events") or [None]) for item in self._items)
 
@@ -2247,6 +2250,7 @@ async def health():
             "runs": queue_runs,
             "events": _prompt_queue.event_count() if _prompt_queue else 0,
             "automated_runs": _prompt_queue.automated_count() if _prompt_queue else 0,
+            "unfinished_runs": _prompt_queue.unfinished_count() if _prompt_queue else 0,
             "busy": _active_codex_proc is not None and _active_codex_proc.returncode is None,
         },
         "last_invocation": state.get("last_invocation"),
