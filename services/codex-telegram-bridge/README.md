@@ -68,6 +68,7 @@ Copy `.env.example` to `.env` and set the values for your host.
 - `CODEX_REASONING_EFFORT`
 - `CODEX_SANDBOX`
 - `CODEX_ADD_DIRS`
+- `CODEX_BRIDGE_CLEAR_STALE_RESTART_JOBS`
 - `ALLOWED_CHAT_IDS`
 - `A2A_TRUST_REGISTRY_BOTS`
 - `A2A_RETIRED_TARGETS`
@@ -97,6 +98,7 @@ CODEX_FULL_AUTO=false
 CODEX_DANGEROUS_BYPASS=false
 CODEX_ADD_DIRS=
 CODEX_BRIDGE_PORT=8110
+CODEX_BRIDGE_CLEAR_STALE_RESTART_JOBS=true
 
 CODEX_DEFAULT_FOLDER=${HOME}
 CODEX_BRIDGE_STATE_DIR=${HOME}/.local/state/codex-telegram-bridge
@@ -195,6 +197,22 @@ lsof -nP -iTCP:${CODEX_BRIDGE_PORT:-8110} -sTCP:LISTEN
 ```bash
 ./deploy-fleet.sh
 ```
+
+If the queue is busy and the restart must wait, use the bounded foreground
+helper instead of creating a transient launchd job:
+
+```bash
+./scripts/restart-codex-bridge-when-idle.sh \
+  --service com.ella.codex-bridge \
+  --port 8110 \
+  --timeout 900
+```
+
+Run that command from the repository root. It exits without restarting when
+the timeout is reached. Do not use `launchctl submit` for deferred restarts:
+submitted jobs can remain registered and relaunch after a successful exit,
+creating a restart loop. On macOS, bridge startup also removes the historical
+`restart-once`, `force-restart-once`, and `retired-target-reload` job labels.
 
 ## Linux Deployment with systemd
 

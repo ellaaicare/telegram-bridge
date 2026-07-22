@@ -12,6 +12,11 @@ if [ -f .env ]; then
   set +a
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]] && [[ "${CODEX_BRIDGE_CLEAR_STALE_RESTART_JOBS:-true}" == "true" ]]; then
+  "${ROOT_DIR}/../../scripts/clear-stale-bridge-restart-jobs.sh" || \
+    echo "[bridge-startup] warning: stale transient launchd job cleanup failed" >&2
+fi
+
 PORT="${CODEX_BRIDGE_PORT:-8110}"
 
 exec "${VENV_DIR}/bin/uvicorn" main:app --host 0.0.0.0 --port "$PORT"
