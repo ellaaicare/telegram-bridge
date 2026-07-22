@@ -318,6 +318,8 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("claude-bridge")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _parse_handoff(raw: str) -> tuple[bool, str]:

@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import os
 import sys
 import uuid
@@ -55,6 +56,18 @@ def test_bridge_version_metadata_is_exposed():
     assert bridge.BRIDGE_VERSION == "3.5.0"
     assert bridge.BRIDGE_BUILD == "a2a-noise-harden-pr6.9c8bcef"
     assert bridge.app.version == bridge.BRIDGE_VERSION
+
+
+def test_http_client_info_logs_do_not_expose_telegram_token(caplog):
+    load_bridge_module()
+    token = "123456789:secret-token-value"
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("httpx").info(
+            "HTTP Request: GET https://api.telegram.org/bot%s/getMe", token
+        )
+
+    assert token not in caplog.text
 
 
 def test_harness_environment_prepends_user_cli_paths_without_duplicates():
