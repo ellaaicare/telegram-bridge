@@ -57,6 +57,28 @@ def test_bridge_version_metadata_is_exposed():
     assert bridge.app.version == bridge.BRIDGE_VERSION
 
 
+def test_harness_environment_prepends_user_cli_paths_without_duplicates():
+    bridge = load_bridge_module()
+    home = Path("/Users/tester")
+
+    result = bridge._build_harness_environment(
+        {
+            "PATH": f"/usr/bin{os.pathsep}{home / '.local' / 'bin'}{os.pathsep}/bin",
+            "KEEP_ME": "yes",
+        },
+        home=home,
+    )
+
+    assert result["PATH"].split(os.pathsep) == [
+        str(home / ".grok" / "bin"),
+        str(home / ".local" / "bin"),
+        str(home / ".bun" / "bin"),
+        "/usr/bin",
+        "/bin",
+    ]
+    assert result["KEEP_ME"] == "yes"
+
+
 def test_repeated_bad_bot_syntax_is_silently_ignored():
     bridge = load_bridge_module()
     bridge.BOT_USERNAME = "ExampleClaudeBot"
