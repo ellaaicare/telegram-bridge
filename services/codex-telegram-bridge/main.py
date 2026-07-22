@@ -1967,6 +1967,7 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
 async def cmd_clear_queue(chat_id: int, msg_id: int) -> tuple[int, int]:
     removed = await _prompt_queue.clear() if _prompt_queue else []
+    _cancel_checkpoint_rotations(removed)
     await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /clearqueue.")
     event_count = sum(len(item.get("a2a_events") or [None]) for item in removed)
     await send_message(
@@ -1975,6 +1976,22 @@ async def cmd_clear_queue(chat_id: int, msg_id: int) -> tuple[int, int]:
         reply_to=msg_id,
     )
     return len(removed), event_count
+
+
+def _cancel_checkpoint_rotations(items: list[dict]) -> None:
+    changed = False
+    rotations = state.setdefault("checkpoint_rotations", {})
+    for item in items:
+        if item.get("kind") != "checkpoint":
+            continue
+        folder = item.get("folder")
+        rotation_id = item.get("checkpoint_rotation_id")
+        current = rotations.get(folder) if folder and rotation_id else None
+        if current and current.get("id") == rotation_id:
+            rotations.pop(folder, None)
+            changed = True
+    if changed:
+        save_state()
 
 
 async def _notify_terminal_a2a_items(items: list[dict], reason: str):
@@ -2012,6 +2029,7 @@ async def cmd_interrupt(
     removed = []
     if clear_pending and _prompt_queue:
         removed = await _prompt_queue.clear()
+        _cancel_checkpoint_rotations(removed)
         await _notify_terminal_a2a_items(removed, "Cancelled by operator before execution via /stop.")
 
     active = _active_codex_proc is not None and _active_codex_proc.returncode is None

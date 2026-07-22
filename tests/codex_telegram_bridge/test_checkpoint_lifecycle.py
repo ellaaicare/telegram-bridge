@@ -65,6 +65,57 @@ def test_force_new_is_explicit_checkpoint_bypass(tmp_path):
     assert any("bypassed" in message.lower() for message in sent)
 
 
+def test_clearqueue_cancels_guarded_rotation_and_allows_another(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+
+    async def exercise():
+        await bridge.handle_command(1, 2, "/new first")
+        await bridge.cmd_clear_queue(1, 3)
+        await bridge.handle_command(1, 4, "/new second")
+
+    asyncio.run(exercise())
+
+    rotation = bridge.state["checkpoint_rotations"][str(tmp_path)]
+    assert rotation["label"] == "second"
+    assert bridge._prompt_queue.qsize() == 1
+
+
+def test_stop_cancels_guarded_rotation_and_allows_another(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+
+    async def exercise():
+        await bridge.handle_command(1, 2, "/new first")
+        await bridge.cmd_interrupt(1, 3, "", clear_pending=True)
+        await bridge.handle_command(1, 4, "/new second")
+
+    asyncio.run(exercise())
+
+    rotation = bridge.state["checkpoint_rotations"][str(tmp_path)]
+    assert rotation["label"] == "second"
+    assert bridge._prompt_queue.qsize() == 1
+
+
+def test_cancelled_checkpoint_does_not_clear_newer_rotation(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure(bridge, tmp_path)
+    folder = str(tmp_path)
+    bridge.state["checkpoint_rotations"][folder] = {"id": "newer"}
+
+    bridge._cancel_checkpoint_rotations(
+        [
+            {
+                "kind": "checkpoint",
+                "folder": folder,
+                "checkpoint_rotation_id": "older",
+            }
+        ]
+    )
+
+    assert bridge.state["checkpoint_rotations"][folder]["id"] == "newer"
+
+
 def test_successful_checkpoint_rotates_and_schedules_bootstrap(tmp_path):
     bridge = load_bridge_module(tmp_path)
     configure(bridge, tmp_path)
