@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ellaaicare/telegram-bridge/skills/project-checkpoint/checkpoint.schema.json",
+  "title": "Project checkpoint capsule",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "checkpoint_id",
+    "created_at",
+    "snapshot_sha256",
+    "status",
+    "runtime",
+    "project",
+    "objective",
+    "source_of_truth",
+    "completed",
+    "current_state",
+    "decisions",
+    "knowledge",
+    "configuration",
+    "deployment",
+    "validation",
+    "blockers",
+    "next_actions",
+    "risks",
+    "relevant_paths",
+    "relevant_commands",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "checkpoint_id": {"type": "string", "minLength": 8},
+    "created_at": {"type": "string", "format": "date-time"},
+    "snapshot_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["draft", "complete"]},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "bridge", "session_id"],
+      "properties": {
+        "provider": {"type": "string"},
+        "bridge": {"type": "string"},
+        "session_id": {"type": ["string", "null"]}
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["working_directory", "root", "key", "git"],
+      "properties": {
+        "working_directory": {"type": "string"},
+        "root": {"type": "string"},
+        "key": {"type": "string"},
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["is_repository", "branch", "head", "dirty", "changes"],
+          "properties": {
+            "is_repository": {"type": "boolean"},
+            "branch": {"type": ["string", "null"]},
+            "head": {"type": ["string", "null"]},
+            "dirty": {"type": "boolean"},
+            "changes": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "objective": {"type": "string"},
+    "source_of_truth": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+    "completed": {"type": "array", "items": {"type": "string"}},
+    "current_state": {"type": "string"},
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "knowledge": {"type": "array", "items": {"$ref": "#/$defs/knowledge"}},
+    "configuration": {"type": "array", "items": {"$ref": "#/$defs/configuration"}},
+    "deployment": {"type": "array", "items": {"$ref": "#/$defs/deployment"}},
+    "validation": {"type": "array", "items": {"$ref": "#/$defs/validation"}},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "next_actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/action"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "relevant_paths": {"type": "array", "items": {"type": "string"}},
+    "relevant_commands": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "ref", "status"],
+      "properties": {"type": {"type": "string"}, "ref": {"type": "string"}, "status": {"type": "string"}}
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "reason"],
+      "properties": {"decision": {"type": "string"}, "reason": {"type": "string"}}
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact", "source", "revalidate"],
+      "properties": {"fact": {"type": "string"}, "source": {"type": "string"}, "revalidate": {"type": "boolean"}}
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "purpose", "location", "secret_value_recorded"],
+      "properties": {
+        "name": {"type": "string"},
+        "purpose": {"type": "string"},
+        "location": {"type": "string"},
+        "secret_value_recorded": {"const": false}
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "state", "observed_at", "revalidate"],
+      "properties": {
+        "target": {"type": "string"},
+        "state": {"type": "string"},
+        "observed_at": {"type": "string"},
+        "revalidate": {"type": "boolean"}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check", "result"],
+      "properties": {"check": {"type": "string"}, "result": {"type": "string"}}
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "owner", "priority"],
+      "properties": {"action": {"type": "string"}, "owner": {"type": "string"}, "priority": {"type": "string"}}
+    }
+  }
+}

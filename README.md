@@ -12,6 +12,7 @@ This repository contains:
 - `services/telegram-a2a/agents.json`: shared A2A bot registry (example — live registry at `~/.config/telegram-bridge/agents.json`).
 - `scripts/deploy-fleet.sh`: Fleet-wide deploy orchestrator.
 - `skills/telegram-a2a-handoff/SKILL.md`: A2A handoff protocol guidance.
+- `skills/project-checkpoint/`: provider-neutral save/restore contract for durable agent context.
 - `docs/runbooks/telegram-a2a-handoff.md`: operator runbook for bridge handoffs.
 - `tests/`: bridge regression tests.
 
@@ -22,6 +23,36 @@ This repository contains:
 - Grok bridge: Full support via `HARNESS_CLI=grok` (see `services/grok-telegram-bridge/`).
 
 The main bridges expose version/build metadata from `/health` and `/status`.
+
+## Durable Checkpoints
+
+The Codex and Claude-family bridges share one source-controlled `project-checkpoint`
+skill. Fleet deployment links it into both `~/.codex/skills/project-checkpoint`
+and `~/.claude/skills/project-checkpoint`; do not maintain divergent copies in
+agent home directories.
+
+Bridge commands:
+
+```text
+/checkpoint [note]          save the current project/session context
+/new [label]                save, validate, then rotate the session
+/new force [label]          rotate without saving (explicit recovery bypass)
+/compact                    save, validate, then rotate the session
+/resume checkpoint          start fresh and load the latest project capsule
+```
+
+After guarded `/new`, the first queued prompt automatically loads the committed
+capsule. Checkpoints live under
+`~/.local/share/agent-checkpoints/projects/<project-key>/` by default. Set
+`PROJECT_CHECKPOINT_STORE_ROOT` to move this protected user-local store, or set
+`PROJECT_CHECKPOINT_ENABLED=false` to restore legacy immediate rotation.
+
+Capsules never replace GitHub issues, pull requests, runbooks, or committed docs.
+They preserve session-specific decisions and learned context, then tell the next
+agent which authoritative records and mutable runtime facts to revalidate.
+
+See [`docs/runbooks/project-checkpoint.md`](docs/runbooks/project-checkpoint.md) for
+the lifecycle, storage, security, failure handling, and staged rollout procedure.
 
 ## Test
 

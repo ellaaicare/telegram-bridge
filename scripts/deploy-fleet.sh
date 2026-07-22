@@ -174,6 +174,21 @@ pull_node() {
   done
 }
 
+# ── Install shared agent skills once per node ────────────────────────
+install_agent_skills() {
+  local node_name="$1" ssh_target="$2" base="$3"
+
+  if [[ ${DRY_RUN} -eq 1 ]]; then
+    log "  [dry-run] would: install project-checkpoint skill for Codex and Claude"
+    return 0
+  fi
+
+  run_on "${ssh_target}" "'${base}/scripts/install-agent-skills.sh' --repo-root '${base}'" | \
+    while read -r line; do
+      log "  skill: ${line}"
+    done
+}
+
 # ── Deploy one bridge (pip + restart) ────────────────────────────────
 deploy_bridge() {
   local node_name="$1" ssh_target="$2" base="$3" svc_mgr="$4" bridge="$5" user="$6"
@@ -240,6 +255,7 @@ for entry in "${FLEET[@]}"; do
 
   # Pull once per node
   pull_node "${name}" "${ssh_target}" "${base}"
+  install_agent_skills "${name}" "${ssh_target}" "${base}"
 
   IFS=',' read -ra bridge_list <<< "${bridges}"
   for bridge in "${bridge_list[@]}"; do
