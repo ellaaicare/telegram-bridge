@@ -84,6 +84,32 @@ def test_router_events_coalesce_into_one_pending_run():
     assert sent == []
 
 
+def test_health_keeps_dequeued_work_unfinished_until_task_done():
+    bridge = load_bridge_module()
+    configure_queue(bridge)
+    item = {"text": "dequeued", "automated": False}
+
+    async def exercise():
+        await bridge._prompt_queue.put(item)
+        dequeued = await bridge._prompt_queue.get()
+        before = await bridge.health()
+        bridge._prompt_queue.task_done()
+        after = await bridge.health()
+        return dequeued, before, after
+
+    dequeued, before, after = asyncio.run(exercise())
+
+    assert dequeued == item
+    assert before["queue"] == {
+        "runs": 0,
+        "events": 0,
+        "automated_runs": 0,
+        "unfinished_runs": 1,
+        "busy": False,
+    }
+    assert after["queue"]["unfinished_runs"] == 0
+
+
 def test_log_redaction_masks_provider_keys_and_bot_tokens():
     bridge = load_bridge_module()
 

@@ -71,8 +71,9 @@ queue = payload.get("queue") or {}
 idle = (
     payload.get("status") == "ok"
     and not queue.get("busy", True)
-    and int(queue.get("runs", 0)) == 0
-    and int(queue.get("events", 0)) == 0
+    and int(queue.get("runs", 1)) == 0
+    and int(queue.get("events", 1)) == 0
+    and int(queue.get("unfinished_runs", 1)) == 0
 )
 raise SystemExit(0 if idle else 1)
 ' >/dev/null 2>&1
