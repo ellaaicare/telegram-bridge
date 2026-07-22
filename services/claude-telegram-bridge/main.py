@@ -1863,6 +1863,21 @@ def _extract_event_text(value) -> str:
     return ""
 
 
+def _harness_process_env() -> dict[str, str]:
+    env = os.environ.copy()
+    path_entries = env.get("PATH", "").split(os.pathsep)
+    for directory in (
+        Path.home() / ".grok" / "bin",
+        Path.home() / ".local" / "bin",
+        Path.home() / ".bun" / "bin",
+    ):
+        value = str(directory)
+        if value not in path_entries:
+            path_entries.insert(0, value)
+    env["PATH"] = os.pathsep.join(path_entries)
+    return env
+
+
 async def run_harness(
     prompt: str,
     chat_id: int,
@@ -1882,7 +1897,7 @@ async def run_harness(
     global _active_harness_proc, _watchdog_current_tool, _watchdog_last_progress
 
     cwd = resolve_existing_cwd(cwd or state["active_folder"], HOME)
-    proc_env = os.environ.copy()
+    proc_env = _harness_process_env()
     if new_session:
         sid = None
     elif use_default_session:

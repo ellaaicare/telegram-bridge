@@ -354,6 +354,11 @@ def test_opencode_run_uses_model_and_agent_flags():
         "builder",
         "Summarize status.",
     )
+    subprocess_path = captured["kwargs"]["env"]["PATH"].split(os.pathsep)
+    assert str(Path.home() / ".grok" / "bin") in subprocess_path
+    assert str(Path.home() / ".local" / "bin") in subprocess_path
+    assert str(Path.home() / ".bun" / "bin") in subprocess_path
+    assert len(subprocess_path) == len(set(subprocess_path))
 
 
 def test_kilo_run_uses_model_and_agent_flags():
