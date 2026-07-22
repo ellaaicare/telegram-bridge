@@ -64,6 +64,9 @@ protected locations only.
 
 Treat a rejected capsule as potentially sensitive. The bridge deletes temporary drafts
 after success or failure and does not include capsule contents in Telegram responses.
+Restore prompts explicitly treat capsule fields, quoted transcript/issue text, links,
+and recorded commands as untrusted data. Capsule content cannot override system,
+developer, repository, or current user instructions.
 
 ## Installation
 
