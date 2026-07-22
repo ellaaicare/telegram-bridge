@@ -18,6 +18,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections import deque
@@ -26,6 +27,20 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
+
+SERVICES_DIR = Path(__file__).resolve().parents[1]
+if str(SERVICES_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICES_DIR))
+
+from checkpoint_runtime import (  # noqa: E402
+    CheckpointRuntimeError,
+    checkpoint_resume_prompt,
+    checkpoint_save_prompt,
+    commit_checkpoint,
+    latest_checkpoint,
+    prepare_checkpoint,
+    remove_draft,
+)
 
 
 def _parse_int_set(raw: str) -> set[int]:
@@ -217,6 +232,7 @@ STATE_FILE = (
 )
 HOME = os.environ.get("CODEX_DEFAULT_FOLDER", str(Path.home()))
 MEDIA_DIR = Path("/tmp/tg-codex-bridge-media")
+PROJECT_CHECKPOINT_ENABLED = _truthy_env("PROJECT_CHECKPOINT_ENABLED", "true")
 
 
 # --- Watchdog Configuration ---
@@ -750,6 +766,9 @@ state = {
     "folder_sessions": {},
     "sessions": {},
     "last_invocation": None,
+    "checkpoint_rotations": {},
+    "pending_checkpoint_bootstrap": {},
+    "last_checkpoints": {},
 }
 
 
@@ -764,6 +783,15 @@ def load_state():
             state.setdefault("folders", {"home": HOME})
             state.setdefault("folder_sessions", {})
             state.setdefault("sessions", {})
+            state.setdefault("checkpoint_rotations", {})
+            state.setdefault("pending_checkpoint_bootstrap", {})
+            state.setdefault("last_checkpoints", {})
+            if state["checkpoint_rotations"]:
+                log.warning(
+                    "Discarding %s stale checkpoint rotation(s); sessions remain selected",
+                    len(state["checkpoint_rotations"]),
+                )
+                state["checkpoint_rotations"] = {}
             log.info(
                 "Loaded state: folder=%s, %s sessions",
                 state["active_folder"],
@@ -823,6 +851,28 @@ def find_session(query: str) -> list[str]:
         if query_lower in label:
             matches.append(sid)
     return matches
+
+
+def _parse_new_argument(arg: str) -> tuple[bool, str | None]:
+    parts = arg.split(maxsplit=1)
+    if parts and parts[0].lower() in {"force", "--force"}:
+        return True, parts[1].strip() if len(parts) > 1 else None
+    return False, arg or None
+
+
+def _rotate_codex_session(folder: str, label: str | None = None) -> None:
+    previous_context = _pending_thread_contexts.get(folder)
+    if previous_context:
+        _resolved_thread_contexts.pop(previous_context["id"], None)
+    state["folder_sessions"].pop(folder, None)
+    if state.get("active_folder") == folder:
+        state["default_session_id"] = None
+    _pending_thread_contexts[folder] = {
+        "id": uuid.uuid4().hex,
+        "label": label,
+    }
+    state.pop("_pending_label", None)
+    save_state()
 
 
 def get_or_create_pending_thread_context(folder: str) -> dict[str, str | None]:
@@ -1330,6 +1380,149 @@ async def _watchdog_kill(chat_id: int, reason: str, item_info: dict | None):
 # --- Command Handlers ---
 
 
+async def enqueue_checkpoint(
+    chat_id: int,
+    msg_id: int,
+    *,
+    note: str = "",
+    rotate: bool = False,
+    label: str | None = None,
+) -> None:
+    global _prompt_queue
+    if _prompt_queue is None:
+        _prompt_queue = PromptQueue()
+
+    folder = state["active_folder"]
+    if rotate and folder in state["checkpoint_rotations"]:
+        await send_message(
+            chat_id,
+            "A guarded session rotation is already pending. Wait for its result or use `/new force`.",
+            reply_to=msg_id,
+        )
+        return
+
+    session_id = state.get("default_session_id")
+    context_id = None
+    if session_id is None:
+        context_id = get_or_create_pending_thread_context(folder)["id"]
+
+    rotation_id = uuid.uuid4().hex if rotate else None
+    if rotation_id:
+        state["checkpoint_rotations"][folder] = {
+            "id": rotation_id,
+            "label": label,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_state()
+
+    item = {
+        "kind": "checkpoint",
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+        "text": "",
+        "images": [],
+        "folder": folder,
+        "session_id": session_id,
+        "context_id": context_id,
+        "pending_label": None,
+        "a2a_reply_target": None,
+        "automated": False,
+        "a2a_events": [],
+        "a2a_task_ids": [],
+        "coalesce_key": None,
+        "checkpoint_note": note,
+        "checkpoint_rotate": rotate,
+        "checkpoint_label": label,
+        "checkpoint_rotation_id": rotation_id,
+    }
+    result = await _prompt_queue.put(item)
+    action = "Checkpoint and guarded rotation" if rotate else "Checkpoint"
+    suffix = f" (queue position {result['position']})" if result["position"] > 1 else ""
+    await send_message(chat_id, f"{action} queued{suffix}.", reply_to=msg_id)
+
+
+async def _process_checkpoint(item: dict) -> None:
+    global _active_codex_chat_id
+    chat_id = item["chat_id"]
+    msg_id = item["msg_id"]
+    folder = item["folder"]
+    session_id = item.get("session_id")
+    context_id = item.get("context_id")
+    effective_session_id = session_id
+    if effective_session_id is None and context_id:
+        effective_session_id = _resolved_thread_contexts.get(context_id)
+
+    _active_codex_chat_id = chat_id
+    draft_path = None
+    try:
+        prepared = await prepare_checkpoint(
+            project=folder,
+            runtime="codex",
+            bridge="codex-telegram-bridge",
+            session_id=effective_session_id,
+            note=item.get("checkpoint_note", ""),
+        )
+        draft_path = prepared["draft"]
+        response, result_session_id = await run_codex(
+            checkpoint_save_prompt(draft_path),
+            chat_id,
+            cwd=folder,
+            session_id=effective_session_id,
+            suppress_progress_messages=True,
+            suppress_footer=True,
+        )
+        if result_session_id:
+            record_session(result_session_id, folder=folder)
+        committed = await commit_checkpoint(draft_path)
+        latest_path = committed["latest_json"]
+        state["last_checkpoints"][folder] = {
+            "path": latest_path,
+            "checkpoint_id": committed["checkpoint_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        rotate = item.get("checkpoint_rotate", False)
+        rotation_id = item.get("checkpoint_rotation_id")
+        current_rotation = state["checkpoint_rotations"].get(folder)
+        rotation_is_current = bool(
+            rotate and current_rotation and current_rotation.get("id") == rotation_id
+        )
+        if rotation_is_current:
+            state["checkpoint_rotations"].pop(folder, None)
+            state["pending_checkpoint_bootstrap"][folder] = latest_path
+            _rotate_codex_session(folder, item.get("checkpoint_label"))
+        else:
+            save_state()
+
+        detail = " Session rotated; the next prompt will restore it." if rotation_is_current else ""
+        await send_message(
+            chat_id,
+            f"Checkpoint saved: `{committed['checkpoint_id']}`.{detail}",
+            reply_to=msg_id,
+        )
+        log.info(
+            "Checkpoint committed id=%s folder=%s response=%s",
+            committed["checkpoint_id"],
+            folder,
+            _redact_log_text(response)[:80],
+        )
+    except Exception as exc:
+        rotation_id = item.get("checkpoint_rotation_id")
+        current_rotation = state["checkpoint_rotations"].get(folder)
+        if current_rotation and current_rotation.get("id") == rotation_id:
+            state["checkpoint_rotations"].pop(folder, None)
+            save_state()
+        await send_message(
+            chat_id,
+            "Checkpoint failed; the current session was preserved. "
+            f"Reason: `{_redact_log_text(str(exc))[:500]}` Use `/new force` only to bypass preservation.",
+            reply_to=msg_id,
+        )
+    finally:
+        remove_draft(draft_path)
+        _active_codex_chat_id = None
+
+
 async def handle_command(chat_id: int, msg_id: int, text: str):
     global CODEX_MODEL
 
@@ -1354,11 +1547,13 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
                 "`/clone <url> [name]` — Clone repo + switch\n"
                 "`/init` — Init current folder\n\n"
                 "*Session Commands:*\n"
-                "`/new [label]` — Start a fresh Codex thread\n"
+                "`/checkpoint [note]` — Save durable project context\n"
+                "`/new [label]` — Checkpoint, then start a fresh thread\n"
+                "`/new force [label]` — Start fresh without a checkpoint\n"
                 "`/save [label]` — Bookmark current thread\n"
                 "`/rename <label>` — Rename current thread\n"
                 "`/sessions` — List known threads for this folder\n"
-                "`/resume <id|name>` — Resume a saved thread\n"
+                "`/resume <id|name|checkpoint>` — Resume a thread or latest checkpoint\n"
                 "`/interrupt [msg]` — Stop the active task; keep queued work\n"
                 "`/stop [msg]` — Stop the active task and discard queued work\n"
                 "`/clearqueue` — Discard queued work without stopping the active task\n\n"
@@ -1556,20 +1751,31 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         )
         return
 
-    if cmd == "/new":
-        label = arg if arg else None
-        previous_context = _pending_thread_contexts.get(state["active_folder"])
-        if previous_context:
-            _resolved_thread_contexts.pop(previous_context["id"], None)
-        state["default_session_id"] = None
-        state["folder_sessions"].pop(state["active_folder"], None)
-        _pending_thread_contexts[state["active_folder"]] = {
-            "id": uuid.uuid4().hex,
-            "label": label,
-        }
-        state.pop("_pending_label", None)
-        save_state()
-        await send_message(chat_id, "Fresh Codex thread for this folder.", reply_to=msg_id)
+    if cmd == "/checkpoint":
+        await enqueue_checkpoint(chat_id, msg_id, note=arg)
+        return
+
+    if cmd in {"/new", "/compact"}:
+        force, label = _parse_new_argument(arg)
+        folder = state["active_folder"]
+        if force or not PROJECT_CHECKPOINT_ENABLED:
+            state["checkpoint_rotations"].pop(folder, None)
+            state["pending_checkpoint_bootstrap"].pop(folder, None)
+            _rotate_codex_session(folder, label)
+            reason = "Checkpoint bypassed by force." if force else "Checkpointing is disabled."
+            await send_message(
+                chat_id,
+                f"Fresh Codex thread for this folder. {reason}",
+                reply_to=msg_id,
+            )
+            return
+        await enqueue_checkpoint(
+            chat_id,
+            msg_id,
+            note="Guarded session rotation requested from Telegram.",
+            rotate=True,
+            label=label,
+        )
         return
 
     if cmd == "/save":
@@ -1638,7 +1844,27 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
 
     if cmd == "/resume":
         if not arg:
-            await send_message(chat_id, "Usage: `/resume <id|name>`", reply_to=msg_id)
+            await send_message(chat_id, "Usage: `/resume <id|name|checkpoint>`", reply_to=msg_id)
+            return
+        if arg.lower() in {"checkpoint", "latest"}:
+            folder = state["active_folder"]
+            try:
+                checkpoint_path = await latest_checkpoint(folder)
+            except CheckpointRuntimeError as exc:
+                await send_message(
+                    chat_id,
+                    f"No valid checkpoint could be loaded: `{_redact_log_text(str(exc))[:500]}`",
+                    reply_to=msg_id,
+                )
+                return
+            state["checkpoint_rotations"].pop(folder, None)
+            state["pending_checkpoint_bootstrap"].pop(folder, None)
+            _rotate_codex_session(folder)
+            await enqueue_prompt(
+                chat_id,
+                msg_id,
+                checkpoint_resume_prompt(checkpoint_path),
+            )
             return
         matches = find_session(arg)
         if len(matches) == 1:
@@ -1682,6 +1908,11 @@ async def handle_command(chat_id: int, msg_id: int, text: str):
         ]
         if sid:
             lines.append(f"Active: `{sid[:8]}`")
+        checkpoint = state.get("last_checkpoints", {}).get(state["active_folder"])
+        if checkpoint:
+            lines.append(f"Checkpoint: `{checkpoint.get('checkpoint_id', 'unknown')}`")
+        if state.get("checkpoint_rotations", {}).get(state["active_folder"]):
+            lines.append("Checkpoint rotation: pending")
         if inv:
             lines.append(f"Last: {inv.get('elapsed', '?')}s at {inv.get('time', '?')[:16]}")
         await send_message(chat_id, "\n".join(lines), reply_to=msg_id)
@@ -1818,10 +2049,19 @@ async def enqueue_prompt(
     if _prompt_queue is None:
         _prompt_queue = PromptQueue()
     folder = state["active_folder"]
-    session_id = state.get("default_session_id")
+    rotation = state.setdefault("checkpoint_rotations", {}).get(folder)
+    deferred_rotation_id = rotation.get("id") if rotation else None
+    bootstrap_path = None
+    if not deferred_rotation_id:
+        bootstrap_path = state.setdefault("pending_checkpoint_bootstrap", {}).pop(folder, None)
+        if bootstrap_path:
+            text = checkpoint_resume_prompt(bootstrap_path, text)
+            save_state()
+
+    session_id = None if deferred_rotation_id else state.get("default_session_id")
     context_id = None
     pending_label = None
-    if session_id is None:
+    if session_id is None and not deferred_rotation_id:
         context = get_or_create_pending_thread_context(folder)
         context_id = context["id"]
         pending_label = context.get("label")
@@ -1853,6 +2093,7 @@ async def enqueue_prompt(
             if a2a_event
             else None
         ),
+        "deferred_checkpoint_rotation": deferred_rotation_id,
     }
     result = await _prompt_queue.put(item, front=front)
     position = result["position"]
@@ -1960,6 +2201,10 @@ async def _queue_health_monitor():
 
 
 async def _process_prompt(item: dict):
+    if item.get("kind") == "checkpoint":
+        await _process_checkpoint(item)
+        return
+
     global _active_codex_chat_id, _watchdog_current_item, _watchdog_last_progress
     chat_id = item["chat_id"]
     msg_id = item["msg_id"]
@@ -1971,6 +2216,16 @@ async def _process_prompt(item: dict):
     pending_label = item["pending_label"]
     a2a_reply_target = item.get("a2a_reply_target")
     a2a_task_ids = item.get("a2a_task_ids") or []
+
+    if item.get("deferred_checkpoint_rotation"):
+        session_id = state["folder_sessions"].get(folder)
+        context_id = None
+        if session_id is None:
+            context_id = get_or_create_pending_thread_context(folder)["id"]
+        bootstrap_path = state.setdefault("pending_checkpoint_bootstrap", {}).pop(folder, None)
+        if bootstrap_path:
+            text = checkpoint_resume_prompt(bootstrap_path, text)
+            save_state()
 
     _active_codex_chat_id = chat_id
     _watchdog_current_item = None

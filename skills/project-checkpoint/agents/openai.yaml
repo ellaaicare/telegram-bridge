@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Checkpoint"
+  short_description: "Save and restore durable agent work context"
+  default_prompt: "Create or restore a validated project checkpoint before rotating sessions."
