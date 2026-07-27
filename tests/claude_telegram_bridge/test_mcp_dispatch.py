@@ -53,6 +53,9 @@ def configure_bridge(bridge, tmp_path):
 def test_external_dispatch_is_authenticated_and_preserves_claude_model(tmp_path):
     bridge = load_bridge_module(tmp_path)
     sent = configure_bridge(bridge, tmp_path)
+    employee_workspace = tmp_path / "employee-workspace"
+    employee_workspace.mkdir()
+    bridge.state["folder_sessions"][str(employee_workspace)] = "employee-session"
 
     async def exercise():
         request = bridge.DispatchRequest(
@@ -62,6 +65,7 @@ def test_external_dispatch_is_authenticated_and_preserves_claude_model(tmp_path)
             notify_telegram=True,
             model="opus",
             reasoning_effort="max",
+            cwd=str(employee_workspace),
         )
         response = await bridge.dispatch(request, x_dispatch_token="test-token")
         item = await bridge._prompt_queue.get()
@@ -73,10 +77,12 @@ def test_external_dispatch_is_authenticated_and_preserves_claude_model(tmp_path)
     assert item["dispatch_job_id"] == "tb_atlas_test_123"
     assert item["model"] == "opus"
     assert item["reasoning_effort"] == "max"
-    assert item["session_id"] == "atlas-session"
+    assert item["folder"] == str(employee_workspace)
+    assert item["session_id"] == "employee-session"
     saved = (tmp_path / "jobs" / "tb_atlas_test_123.json").read_text()
     assert '"state": "queued"' in saved
     assert '"model": "opus"' in saved
+    assert f'"cwd": "{employee_workspace}"' in saved
     assert any("MCP dispatch queued: Atlas smoke test" in text for _, text, _ in sent)
     assert any("remain available to the MCP caller" in text for _, text, _ in sent)
 
@@ -144,4 +150,23 @@ def test_external_dispatch_rejects_bad_token(tmp_path):
         asyncio.run(exercise())
 
     assert error.value.status_code == 401
+    assert bridge._prompt_queue.empty()
+
+
+def test_external_dispatch_rejects_missing_workspace(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    configure_bridge(bridge, tmp_path)
+
+    async def exercise():
+        request = bridge.DispatchRequest(
+            job_id="tb_atlas_test_789",
+            prompt="This must not be queued.",
+            cwd=str(tmp_path / "does-not-exist"),
+        )
+        await bridge.dispatch(request, x_dispatch_token="test-token")
+
+    with pytest.raises(bridge.HTTPException) as error:
+        asyncio.run(exercise())
+
+    assert error.value.status_code == 400
     assert bridge._prompt_queue.empty()

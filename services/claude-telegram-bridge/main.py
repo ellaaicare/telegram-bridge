@@ -3584,13 +3584,14 @@ async def enqueue_prompt(
     notify_telegram: bool = True,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    cwd: str | None = None,
 ):
     """Add a prompt to the queue. Notifies user of queue position if not first."""
     global _prompt_queue
     if _prompt_queue is None:
         _prompt_queue = asyncio.Queue()
 
-    folder = state["active_folder"]
+    folder = resolve_existing_cwd(cwd, HOME) if cwd else state["active_folder"]
     rotation = state.setdefault("checkpoint_rotations", {}).get(folder)
     deferred_rotation_id = rotation.get("id") if rotation else None
     if not deferred_rotation_id:
@@ -3599,7 +3600,15 @@ async def enqueue_prompt(
             text = checkpoint_resume_prompt(bootstrap_path, text)
             save_state()
 
-    session_id = None if deferred_rotation_id else state.get("default_session_id")
+    session_id = (
+        None
+        if deferred_rotation_id
+        else (
+            state.get("folder_sessions", {}).get(folder)
+            if cwd
+            else state.get("default_session_id")
+        )
+    )
     pending_label = None
     if session_id is None and not deferred_rotation_id:
         pending_label = state.pop("_pending_label", None)
@@ -4142,6 +4151,7 @@ class DispatchRequest(BaseModel):
     notify_telegram: bool = True
     model: str | None = None
     reasoning_effort: str | None = None
+    cwd: str | None = None
 
 
 def _dispatch_token() -> str:
@@ -4214,6 +4224,15 @@ async def dispatch(
     allowed_efforts = {"low", "medium", "high", "xhigh", "max"}
     if request.reasoning_effort and request.reasoning_effort not in allowed_efforts:
         raise HTTPException(status_code=400, detail="invalid reasoning_effort")
+    dispatch_cwd = None
+    if request.cwd:
+        candidate = Path(request.cwd).expanduser()
+        if not candidate.is_absolute() or not candidate.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="cwd must be an existing absolute directory",
+            )
+        dispatch_cwd = str(candidate.resolve())
     chat_id = BRIDGE_DISPATCH_CHAT_ID or next(iter(ALLOWED_USERS), 0)
     if not chat_id:
         raise HTTPException(status_code=503, detail="no dispatch chat id or allowed user configured")
@@ -4227,6 +4246,7 @@ async def dispatch(
         notify_telegram=request.notify_telegram,
         model=request.model or BRIDGE_MODEL or "default",
         reasoning_effort=request.reasoning_effort or "default",
+        cwd=dispatch_cwd or state["active_folder"],
         queued_at=datetime.now(timezone.utc).isoformat(),
     )
     await enqueue_prompt(
@@ -4238,6 +4258,7 @@ async def dispatch(
         notify_telegram=request.notify_telegram,
         model=request.model,
         reasoning_effort=request.reasoning_effort,
+        cwd=dispatch_cwd,
     )
     if request.notify_telegram:
         await _send_mcp_dispatch_notice(
