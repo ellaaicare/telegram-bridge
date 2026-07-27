@@ -170,6 +170,10 @@ are written to `~/.gpt5mcp/bridge-jobs/<job-id>.json`. When
 `notify_telegram=true`, the same single execution is also delivered to the
 configured Telegram user.
 
+The request may include `model` and `reasoning_effort`. They override the
+bridge process defaults for that MCP assignment only; ordinary Telegram
+messages continue to use `CODEX_MODEL` and `CODEX_REASONING_EFFORT`.
+
 This ingress is intended for callers already authenticated to the host, such as
 the gpt5 MCP dispatcher over SSH. Do not expose the bridge port publicly.
 
