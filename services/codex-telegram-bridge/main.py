@@ -12,6 +12,7 @@ Features:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -26,7 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 SERVICES_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICES_DIR) not in sys.path:
@@ -179,8 +181,8 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 # --- Configuration ---
 
-BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.3.0")
-BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "a2a-queue-coalescing-v1")
+BRIDGE_VERSION = os.environ.get("CODEX_BRIDGE_VERSION", "0.4.0")
+BRIDGE_BUILD = os.environ.get("CODEX_BRIDGE_BUILD", "mcp-dispatch-ingress-v1")
 BOT_TOKEN = os.environ.get("CODEX_TELEGRAM_BOT_TOKEN", "")
 A2A_BOT_REGISTRY = _load_a2a_registry()
 A2A_RETIRED_TARGETS = {
@@ -233,6 +235,19 @@ STATE_FILE = (
 HOME = os.environ.get("CODEX_DEFAULT_FOLDER", str(Path.home()))
 MEDIA_DIR = Path("/tmp/tg-codex-bridge-media")
 PROJECT_CHECKPOINT_ENABLED = _truthy_env("PROJECT_CHECKPOINT_ENABLED", "true")
+BRIDGE_DISPATCH_TOKEN_FILE = Path(
+    os.environ.get(
+        "CODEX_BRIDGE_DISPATCH_TOKEN_FILE",
+        str(Path.home() / ".gpt5mcp" / "bridge-token"),
+    )
+).expanduser()
+BRIDGE_DISPATCH_JOB_DIR = Path(
+    os.environ.get(
+        "CODEX_BRIDGE_DISPATCH_JOB_DIR",
+        str(Path.home() / ".gpt5mcp" / "bridge-jobs"),
+    )
+).expanduser()
+BRIDGE_DISPATCH_CHAT_ID = int(os.environ.get("CODEX_BRIDGE_DISPATCH_CHAT_ID", "0") or "0")
 
 
 # --- Watchdog Configuration ---
@@ -2062,6 +2077,8 @@ async def enqueue_prompt(
     images: list[str] | None = None,
     a2a_reply_target: str | None = None,
     front: bool = False,
+    dispatch_job_id: str | None = None,
+    notify_telegram: bool = True,
 ):
     global _prompt_queue
     if _prompt_queue is None:
@@ -2112,6 +2129,8 @@ async def enqueue_prompt(
             else None
         ),
         "deferred_checkpoint_rotation": deferred_rotation_id,
+        "dispatch_job_id": dispatch_job_id,
+        "notify_telegram": notify_telegram,
     }
     result = await _prompt_queue.put(item, front=front)
     position = result["position"]
@@ -2163,8 +2182,17 @@ async def queue_worker():
             log.error("Queue worker error: %s", safe_error)
             chat_id = item["chat_id"]
             msg_id = item["msg_id"]
+            dispatch_job_id = item.get("dispatch_job_id")
+            if dispatch_job_id:
+                _write_dispatch_job(
+                    dispatch_job_id,
+                    state="failed",
+                    error=safe_error,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
             try:
-                await send_message(chat_id, f"Error processing message: {safe_error}", reply_to=msg_id)
+                if item.get("notify_telegram", True):
+                    await send_message(chat_id, f"Error processing message: {safe_error}", reply_to=msg_id)
             except Exception as notify_error:
                 log.error("Failed to send queue error message: %s", _redact_log_text(str(notify_error)))
             await _notify_terminal_a2a_items(
@@ -2234,6 +2262,8 @@ async def _process_prompt(item: dict):
     pending_label = item["pending_label"]
     a2a_reply_target = item.get("a2a_reply_target")
     a2a_task_ids = item.get("a2a_task_ids") or []
+    dispatch_job_id = item.get("dispatch_job_id")
+    notify_telegram = item.get("notify_telegram", True)
 
     if item.get("deferred_checkpoint_rotation"):
         session_id = state["folder_sessions"].get(folder)
@@ -2249,10 +2279,21 @@ async def _process_prompt(item: dict):
     _watchdog_current_item = None
     _watchdog_last_progress = time.time()
 
-    await send_typing(chat_id)
-    typing_task = asyncio.create_task(typing_loop(chat_id))
+    if dispatch_job_id:
+        _write_dispatch_job(
+            dispatch_job_id,
+            state="running",
+            folder=folder,
+            session_id=session_id,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    typing_task = None
+    if notify_telegram:
+        await send_typing(chat_id)
+        typing_task = asyncio.create_task(typing_loop(chat_id))
     watchdog_task = None
-    if WATCHDOG_ENABLED:
+    if WATCHDOG_ENABLED and notify_telegram:
         watchdog_task = asyncio.create_task(_watchdog_monitor(chat_id))
 
     try:
@@ -2279,8 +2320,8 @@ async def _process_prompt(item: dict):
             cwd=folder,
             session_id=effective_session_id,
             images=images,
-            suppress_progress_messages=bool(a2a_reply_target),
-            suppress_footer=bool(a2a_reply_target),
+            suppress_progress_messages=bool(a2a_reply_target) or not notify_telegram,
+            suppress_footer=bool(a2a_reply_target) or not notify_telegram,
         )
         elapsed = time.time() - start
 
@@ -2311,6 +2352,16 @@ async def _process_prompt(item: dict):
             "folder": folder,
         }
         save_state()
+        if dispatch_job_id:
+            _write_dispatch_job(
+                dispatch_job_id,
+                state="completed",
+                folder=folder,
+                session_id=result_session_id,
+                elapsed=round(elapsed, 1),
+                result=response,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
         if a2a_reply_target:
             ok, reason = _validate_handoff_envelope(response, a2a_reply_target)
             if not ok:
@@ -2337,18 +2388,20 @@ async def _process_prompt(item: dict):
             await send_plain_message(chat_id, response, reply_to=msg_id)
             if a2a_task_ids:
                 item.setdefault("terminal_a2a_task_ids", set()).add(a2a_task_ids[0])
-        else:
+        elif notify_telegram:
             await send_message(chat_id, response, reply_to=msg_id)
     finally:
         _active_codex_chat_id = None
         _watchdog_current_item = None
-        typing_task.cancel()
+        if typing_task:
+            typing_task.cancel()
         if watchdog_task:
             watchdog_task.cancel()
-        try:
-            await typing_task
-        except asyncio.CancelledError:
-            pass
+        if typing_task:
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
         if watchdog_task:
             try:
                 await watchdog_task
@@ -2460,6 +2513,83 @@ async def poll_loop():
 # --- FastAPI ---
 
 app = FastAPI(title="Codex Telegram Bridge", version=BRIDGE_VERSION)
+
+
+class DispatchRequest(BaseModel):
+    job_id: str
+    prompt: str
+    label: str = ""
+    notify_telegram: bool = True
+
+
+def _dispatch_token() -> str:
+    try:
+        return BRIDGE_DISPATCH_TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _write_dispatch_job(job_id: str, **patch) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", job_id):
+        raise ValueError("invalid dispatch job id")
+    BRIDGE_DISPATCH_JOB_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    BRIDGE_DISPATCH_JOB_DIR.chmod(0o700)
+    path = BRIDGE_DISPATCH_JOB_DIR / f"{job_id}.json"
+    current = {}
+    try:
+        current = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    current.update(
+        {
+            "schemaVersion": 1,
+            "job_id": job_id,
+            "bridge": BOT_USERNAME or "codex-telegram-bridge",
+            **patch,
+        }
+    )
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(current, indent=2) + "\n")
+    temp.chmod(0o600)
+    temp.replace(path)
+    return current
+
+
+@app.post("/dispatch")
+async def dispatch(
+    request: DispatchRequest,
+    x_dispatch_token: str | None = Header(default=None),
+):
+    expected = _dispatch_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="bridge dispatch token is not configured")
+    if not x_dispatch_token or not hmac.compare_digest(x_dispatch_token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request.job_id):
+        raise HTTPException(status_code=400, detail="invalid job_id")
+    if not request.prompt.strip() or len(request.prompt) > 100_000:
+        raise HTTPException(status_code=400, detail="prompt must contain 1-100000 characters")
+    chat_id = BRIDGE_DISPATCH_CHAT_ID or next(iter(ALLOWED_USERS), 0)
+    if not chat_id:
+        raise HTTPException(status_code=503, detail="no dispatch chat id or allowed user configured")
+    job_path = BRIDGE_DISPATCH_JOB_DIR / f"{request.job_id}.json"
+    if job_path.exists():
+        raise HTTPException(status_code=409, detail="job_id already exists")
+    _write_dispatch_job(
+        request.job_id,
+        state="queued",
+        label=request.label,
+        notify_telegram=request.notify_telegram,
+        queued_at=datetime.now(timezone.utc).isoformat(),
+    )
+    await enqueue_prompt(
+        chat_id,
+        0,
+        request.prompt,
+        dispatch_job_id=request.job_id,
+        notify_telegram=request.notify_telegram,
+    )
+    return {"job_id": request.job_id, "state": "queued"}
 
 
 @app.on_event("startup")

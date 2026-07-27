@@ -162,6 +162,17 @@ Health check:
 curl http://127.0.0.1:${CODEX_BRIDGE_PORT:-8110}/health
 ```
 
+The bridge binds to loopback by default. A trusted local dispatcher can enqueue
+work through `POST /dispatch` using `X-Dispatch-Token`. The token is read from
+`~/.gpt5mcp/bridge-token` by default; callers should read it on the bridge host
+and must never send or log it elsewhere. Dispatch state and the final response
+are written to `~/.gpt5mcp/bridge-jobs/<job-id>.json`. When
+`notify_telegram=true`, the same single execution is also delivered to the
+configured Telegram user.
+
+This ingress is intended for callers already authenticated to the host, such as
+the gpt5 MCP dispatcher over SSH. Do not expose the bridge port publicly.
+
 ## macOS Deployment with launchd
 
 1. Clone the repo to the target machine.
