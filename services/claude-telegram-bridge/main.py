@@ -3557,6 +3557,7 @@ async def enqueue_prompt(
     text: str,
     a2a_reply_target: str | None = None,
     dispatch_job_id: str | None = None,
+    dispatch_label: str = "",
     notify_telegram: bool = True,
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -3593,6 +3594,7 @@ async def enqueue_prompt(
         "pending_label": pending_label,
         "deferred_checkpoint_rotation": deferred_rotation_id,
         "dispatch_job_id": dispatch_job_id,
+        "dispatch_label": dispatch_label,
         "notify_telegram": notify_telegram,
         "model": model,
         "reasoning_effort": reasoning_effort,
@@ -3732,6 +3734,7 @@ async def _process_prompt(item: dict):
     session_id = item.get("session_id")
     pending_label = item.get("pending_label")
     dispatch_job_id = item.get("dispatch_job_id")
+    dispatch_label = item.get("dispatch_label", "")
     notify_telegram = item.get("notify_telegram", True)
     model = item.get("model")
     reasoning_effort = item.get("reasoning_effort")
@@ -3757,6 +3760,18 @@ async def _process_prompt(item: dict):
             session_id=session_id,
             started_at=datetime.now(timezone.utc).isoformat(),
         )
+        if notify_telegram:
+            await _send_mcp_dispatch_notice(
+                chat_id,
+                "started",
+                dispatch_job_id,
+                dispatch_label,
+                (
+                    f"Folder: {folder}\n"
+                    f"Model: {model or BRIDGE_MODEL or 'default'}\n"
+                    f"Effort: {reasoning_effort or 'default'}"
+                ),
+            )
 
     typing_task = None
     if notify_telegram:
@@ -3847,7 +3862,14 @@ async def _process_prompt(item: dict):
         if a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
         elif notify_telegram:
-            await send_message(chat_id, response, reply_to=msg_id)
+            telegram_response = response
+            if dispatch_job_id:
+                display = dispatch_label.strip()[:120] or dispatch_job_id
+                telegram_response = (
+                    f"MCP dispatch completed: {display}\n"
+                    f"Job: {dispatch_job_id}\n\n{response}"
+                )
+            await send_message(chat_id, telegram_response, reply_to=msg_id)
 
     finally:
         _active_harness_chat_id = None
@@ -4132,6 +4154,24 @@ def _write_dispatch_job(job_id: str, **patch) -> dict:
     return current
 
 
+async def _send_mcp_dispatch_notice(
+    chat_id: int,
+    phase: str,
+    job_id: str,
+    label: str = "",
+    detail: str = "",
+) -> None:
+    """Best-effort Telegram notice that never changes MCP job acceptance."""
+    display = label.strip()[:120] or job_id
+    message = f"MCP dispatch {phase}: {display}\nJob: {job_id}"
+    if detail:
+        message += f"\n{detail}"
+    try:
+        await send_plain_message(chat_id, message)
+    except Exception as exc:
+        log.warning("Could not send MCP dispatch %s notice: %s", phase, exc)
+
+
 @app.post("/dispatch")
 async def dispatch(
     request: DispatchRequest,
@@ -4171,10 +4211,19 @@ async def dispatch(
         0,
         request.prompt,
         dispatch_job_id=request.job_id,
+        dispatch_label=request.label,
         notify_telegram=request.notify_telegram,
         model=request.model,
         reasoning_effort=request.reasoning_effort,
     )
+    if request.notify_telegram:
+        await _send_mcp_dispatch_notice(
+            chat_id,
+            "queued",
+            request.job_id,
+            request.label,
+            "Activity and the final result will appear here and remain available to the MCP caller.",
+        )
     return {"job_id": request.job_id, "state": "queued"}
 
 

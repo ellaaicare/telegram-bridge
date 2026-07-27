@@ -167,8 +167,9 @@ work through `POST /dispatch` using `X-Dispatch-Token`. The token is read from
 `~/.gpt5mcp/bridge-token` by default; callers should read it on the bridge host
 and must never send or log it elsewhere. Dispatch state and the final response
 are written to `~/.gpt5mcp/bridge-jobs/<job-id>.json`. When
-`notify_telegram=true`, the same single execution is also delivered to the
-configured Telegram user.
+`notify_telegram=true`, Telegram receives queued, started, streamed activity,
+failure, and final-result notices, while the MCP caller reads the same job state
+and final result from the bridge ledger.
 
 The request may include `model` and `reasoning_effort`. They override the
 bridge process defaults for that MCP assignment only; ordinary Telegram

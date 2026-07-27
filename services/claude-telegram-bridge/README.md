@@ -95,7 +95,10 @@ current Opus release and can change over time. Supported effort values are
 `low`, `medium`, `high`, `xhigh`, and `max`. `BRIDGE_MODEL` controls the default
 for Telegram-originated work, while MCP dispatch requests may override the model
 and effort for one job. When `notify_telegram=true`, one execution is reported
-through both MCP and Telegram. Keep the bridge port loopback-only.
+through both MCP and Telegram: Telegram receives queued, started, streamed
+activity, failure, and final-result notices, while the MCP caller reads the same
+job state and final result from the bridge ledger. Keep the bridge port
+loopback-only.
 
 ## Pull-Based Updates
 
