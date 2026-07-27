@@ -637,6 +637,22 @@ def test_health_uses_harness_metadata():
     assert payload["agent_profile"] == "planner"
 
 
+def test_health_reports_mcp_only_when_telegram_polling_is_disabled():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "grok",
+            "TELEGRAM_POLLING_ENABLED": "false",
+            "TELEGRAM_BOT_TOKEN": "expired-test-token",
+            "BRIDGE_STATE_DIR": "/tmp/grok-mcp-only-test-state",
+        }
+    )
+
+    payload = __import__("asyncio").run(bridge.health())
+
+    assert bridge.TELEGRAM_POLLING_ENABLED is False
+    assert payload["mode"] == "mcp-only"
+
+
 def test_parse_handoff_returns_ignored_for_non_target():
     bridge = load_bridge_module()
     bridge.BOT_USERNAME = "imackilocode_bot"
