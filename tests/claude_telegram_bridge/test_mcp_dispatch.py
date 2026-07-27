@@ -39,11 +39,20 @@ def configure_bridge(bridge, tmp_path):
     token_file = tmp_path / "bridge-token"
     token_file.write_text("test-token\n")
     bridge.BRIDGE_DISPATCH_TOKEN_FILE = token_file
+    bridge.STATE_FILE = tmp_path / "state.json"
+    sent = []
+
+    async def fake_send_message(chat_id, text, reply_to=None):
+        sent.append((chat_id, text, reply_to))
+
+    bridge.send_message = fake_send_message
+    bridge.send_plain_message = fake_send_message
+    return sent
 
 
 def test_external_dispatch_is_authenticated_and_preserves_claude_model(tmp_path):
     bridge = load_bridge_module(tmp_path)
-    configure_bridge(bridge, tmp_path)
+    sent = configure_bridge(bridge, tmp_path)
 
     async def exercise():
         request = bridge.DispatchRequest(
@@ -68,6 +77,56 @@ def test_external_dispatch_is_authenticated_and_preserves_claude_model(tmp_path)
     saved = (tmp_path / "jobs" / "tb_atlas_test_123.json").read_text()
     assert '"state": "queued"' in saved
     assert '"model": "opus"' in saved
+    assert any("MCP dispatch queued: Atlas smoke test" in text for _, text, _ in sent)
+    assert any("remain available to the MCP caller" in text for _, text, _ in sent)
+
+
+def test_external_dispatch_fans_out_progress_and_result(tmp_path):
+    bridge = load_bridge_module(tmp_path)
+    sent = configure_bridge(bridge, tmp_path)
+    bridge.WATCHDOG_ENABLED = False
+
+    async def fake_send_typing(chat_id):
+        return None
+
+    async def fake_typing_loop(chat_id):
+        await asyncio.Event().wait()
+
+    async def fake_run_harness(prompt, chat_id, **kwargs):
+        await bridge.send_message(chat_id, "... inspecting Hermes configuration")
+        return "ATLAS_DUAL_OUTPUT_READY", "atlas-session"
+
+    bridge.send_typing = fake_send_typing
+    bridge.typing_loop = fake_typing_loop
+    bridge.run_harness = fake_run_harness
+
+    async def exercise():
+        request = bridge.DispatchRequest(
+            job_id="tb_atlas_dual_123",
+            prompt="Check dual output without changing files.",
+            label="Atlas dual-output smoke",
+            notify_telegram=True,
+            model="claude-opus-5",
+            reasoning_effort="high",
+        )
+        await bridge.dispatch(request, x_dispatch_token="test-token")
+        item = await bridge._prompt_queue.get()
+        await bridge._process_prompt(item)
+
+    asyncio.run(exercise())
+
+    texts = [text for _, text, _ in sent]
+    assert any("MCP dispatch queued: Atlas dual-output smoke" in text for text in texts)
+    assert any("MCP dispatch started: Atlas dual-output smoke" in text for text in texts)
+    assert "... inspecting Hermes configuration" in texts
+    assert any(
+        "MCP dispatch completed: Atlas dual-output smoke" in text
+        and "ATLAS_DUAL_OUTPUT_READY" in text
+        for text in texts
+    )
+    saved = (tmp_path / "jobs" / "tb_atlas_dual_123.json").read_text()
+    assert '"state": "completed"' in saved
+    assert '"result": "ATLAS_DUAL_OUTPUT_READY"' in saved
 
 
 def test_external_dispatch_rejects_bad_token(tmp_path):
