@@ -2,14 +2,19 @@
 
 Telegram long-polling bridge for the local `grok` CLI (xAI Grok Build TUI headless mode) using the shared hardened A2A runtime from `services/claude-telegram-bridge`.
 
-> **Status**: Thin wrapper created. Full `HARNESS_CLI=grok` support (invocation + streaming NDJSON parser) is still required in the core `claude-telegram-bridge/main.py`. See the tracking issue for progress.
+> **Status**: Supported by the shared bridge runtime with Grok Build
+> streaming JSON, named model/reasoning controls, MCP dispatch ingress, and
+> resumable long-lived sessions.
 
 ## What This Adds
 
 - the same strict `/handoff@TargetBot {json}` enforcement used by Codex and Claude
 - Independent state, port, and service defaults for a Grok Build bot
 - Access to Grok's full tool set (read/edit files, shell, web, subagents, MCP, etc.) via Telegram
-- Session continuity via Grok's native `-s` / `--session-id` and `-c` / `--continue` flags
+- Session continuity via Grok's native `--resume <session-id>` behavior
+- Configurable Grok sandbox profile (`workspace` by default)
+- Dual delivery for MCP-dispatched jobs: progress/final output in Telegram and
+  durable results for the calling MCP client
 
 ## Requirements
 
@@ -40,7 +45,9 @@ A2A_PROGRESS_MODE=status
 WATCHDOG_ENABLED=false
 ```
 
-`/model` will be passed via `grok -m ...` once the core harness supports it.
+`/model` and MCP dispatch model overrides are passed with `grok -m`. Reasoning
+effort is passed with `--effort`; supported dispatcher values are `low`,
+`medium`, `high`, `xhigh`, and `max`.
 
 ## Local Setup
 
@@ -63,13 +70,48 @@ curl http://127.0.0.1:${BRIDGE_PORT:-8140}/health
 
 ## Headless Grok Invocation Notes
 
-The bridge will use something like:
+For a new session, the bridge uses:
 
 ```
-grok -p "<prompt>" --output-format streaming-json --yolo -s "<session>" --cwd "<folder>"
+grok --no-auto-update -p "<prompt>" --output-format streaming-json \
+  --always-approve --model grok-4.5 --effort high \
+  --sandbox workspace --cwd "<folder>"
 ```
 
-Grok's streaming format (`type: text | thought | end`) requires dedicated parser support in the core harness (tracked in the main issue).
+For an existing session it adds `--resume "<session-id>"`. Do not substitute
+`--session-id`/`-s`: current Grok Build uses that option only to assign a UUID
+to a *new* conversation and rejects existing session IDs.
+
+The streaming parser handles `text`, `thought`, `end`, and `error` events.
+Thoughts are reduced to throttled progress notices rather than being copied
+verbatim into the final response.
+
+## Authentication
+
+On a headless host, prefer the browser-independent device flow:
+
+```bash
+grok login --device-auth
+grok models
+```
+
+The human completes the displayed xAI URL/code. Grok stores the credential in
+`~/.grok/auth.json`; keep it mode `0600` and never copy it into this repository,
+an employee manifest, a skill, or a Telegram message. `XAI_API_KEY` is also
+supported for non-interactive service accounts.
+
+## Skills, Plugins, and MCP
+
+Grok Build discovers project and user instructions, skills, plugins, and MCP
+servers from the selected working directory. Audit the effective configuration
+before deployment:
+
+```bash
+grok inspect --json --cwd "${HOME}/ai-company"
+```
+
+Marketplace plugins are executable supply-chain inputs. Pin and audit them
+before installation; xAI does not verify third-party marketplace plugins.
 
 ## A2A & Fleet
 
