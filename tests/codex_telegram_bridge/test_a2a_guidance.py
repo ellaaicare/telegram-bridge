@@ -46,8 +46,8 @@ def test_allowed_bot_raw_chatter_is_silently_ignored():
 def test_bridge_version_metadata_is_exposed():
     bridge = load_bridge_module()
 
-    assert bridge.BRIDGE_VERSION == "0.3.0"
-    assert bridge.BRIDGE_BUILD == "a2a-queue-coalescing-v1"
+    assert bridge.BRIDGE_VERSION == "0.4.0"
+    assert bridge.BRIDGE_BUILD == "mcp-dispatch-ingress-v1"
     assert bridge.app.version == bridge.BRIDGE_VERSION
 
 

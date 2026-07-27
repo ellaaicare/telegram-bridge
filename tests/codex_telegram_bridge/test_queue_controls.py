@@ -135,6 +135,56 @@ def test_log_redaction_masks_provider_keys_and_bot_tokens():
     assert redacted.count("[REDACTED_") == len(secrets)
 
 
+def test_external_dispatch_is_authenticated_and_queued(tmp_path):
+    bridge = load_bridge_module()
+    configure_queue(bridge)
+    token_file = tmp_path / "bridge-token"
+    token_file.write_text("test-token\n")
+    bridge.BRIDGE_DISPATCH_TOKEN_FILE = token_file
+    bridge.BRIDGE_DISPATCH_JOB_DIR = tmp_path / "jobs"
+    bridge.BRIDGE_DISPATCH_CHAT_ID = 436052469
+
+    async def exercise():
+        request = bridge.DispatchRequest(
+            job_id="tb_test_job_123",
+            prompt="Verify the managed employee skill.",
+            label="test",
+            notify_telegram=True,
+        )
+        response = await bridge.dispatch(request, x_dispatch_token="test-token")
+        item = await bridge._prompt_queue.get()
+        return response, item
+
+    response, item = asyncio.run(exercise())
+
+    assert response == {"job_id": "tb_test_job_123", "state": "queued"}
+    assert item["dispatch_job_id"] == "tb_test_job_123"
+    assert item["notify_telegram"] is True
+    assert item["text"] == "Verify the managed employee skill."
+    saved = (tmp_path / "jobs" / "tb_test_job_123.json").read_text()
+    assert '"state": "queued"' in saved
+
+
+def test_external_dispatch_rejects_bad_token(tmp_path):
+    bridge = load_bridge_module()
+    configure_queue(bridge)
+    token_file = tmp_path / "bridge-token"
+    token_file.write_text("test-token\n")
+    bridge.BRIDGE_DISPATCH_TOKEN_FILE = token_file
+    bridge.BRIDGE_DISPATCH_JOB_DIR = tmp_path / "jobs"
+    bridge.BRIDGE_DISPATCH_CHAT_ID = 436052469
+
+    async def exercise():
+        request = bridge.DispatchRequest(job_id="tb_test_job_456", prompt="Nope")
+        await bridge.dispatch(request, x_dispatch_token="wrong")
+
+    try:
+        asyncio.run(exercise())
+        assert False, "expected HTTPException"
+    except bridge.HTTPException as error:
+        assert error.status_code == 401
+
+
 def test_human_prompt_runs_before_pending_automation():
     bridge = load_bridge_module()
     configure_queue(bridge)
