@@ -150,6 +150,8 @@ def test_external_dispatch_is_authenticated_and_queued(tmp_path):
             prompt="Verify the managed employee skill.",
             label="test",
             notify_telegram=True,
+            model="gpt-5.6-sol",
+            reasoning_effort="xhigh",
         )
         response = await bridge.dispatch(request, x_dispatch_token="test-token")
         item = await bridge._prompt_queue.get()
@@ -160,9 +162,28 @@ def test_external_dispatch_is_authenticated_and_queued(tmp_path):
     assert response == {"job_id": "tb_test_job_123", "state": "queued"}
     assert item["dispatch_job_id"] == "tb_test_job_123"
     assert item["notify_telegram"] is True
+    assert item["model"] == "gpt-5.6-sol"
+    assert item["reasoning_effort"] == "xhigh"
     assert item["text"] == "Verify the managed employee skill."
     saved = (tmp_path / "jobs" / "tb_test_job_123.json").read_text()
     assert '"state": "queued"' in saved
+    assert '"model": "gpt-5.6-sol"' in saved
+    assert '"reasoning_effort": "xhigh"' in saved
+
+
+def test_codex_command_accepts_per_dispatch_model_and_effort():
+    bridge = load_bridge_module()
+    command = bridge.build_codex_command(
+        "Test",
+        cwd="/tmp",
+        session_id="session-1",
+        model="gpt-5.6-terra",
+        reasoning_effort="medium",
+    )
+
+    assert command[0:4] == ["codex", "exec", "resume", "--json"]
+    assert command[command.index("-m") + 1] == "gpt-5.6-terra"
+    assert 'model_reasoning_effort="medium"' in command
 
 
 def test_external_dispatch_rejects_bad_token(tmp_path):

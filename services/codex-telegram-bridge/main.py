@@ -1164,16 +1164,20 @@ def build_codex_command(
     cwd: str,
     session_id: str | None = None,
     images: list[str] | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
     images = images or []
+    effective_model = model or CODEX_MODEL
+    effective_reasoning_effort = reasoning_effort or CODEX_REASONING_EFFORT
     if session_id:
         cmd = ["codex", "exec", "resume", "--json"]
         if CODEX_SKIP_GIT_REPO_CHECK:
             cmd.append("--skip-git-repo-check")
-        if CODEX_MODEL:
-            cmd.extend(["-m", CODEX_MODEL])
-        if CODEX_REASONING_EFFORT:
-            cmd.extend(["-c", f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"'])
+        if effective_model:
+            cmd.extend(["-m", effective_model])
+        if effective_reasoning_effort:
+            cmd.extend(["-c", f'model_reasoning_effort="{effective_reasoning_effort}"'])
         if CODEX_FULL_AUTO:
             cmd.append("--full-auto")
         # `codex exec resume` on the current CLI does not expose `-s/--sandbox`.
@@ -1189,10 +1193,10 @@ def build_codex_command(
     cmd = ["codex", "exec", "--json", "-C", cwd, "-s", CODEX_SANDBOX]
     if CODEX_SKIP_GIT_REPO_CHECK:
         cmd.append("--skip-git-repo-check")
-    if CODEX_MODEL:
-        cmd.extend(["-m", CODEX_MODEL])
-    if CODEX_REASONING_EFFORT:
-        cmd.extend(["-c", f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"'])
+    if effective_model:
+        cmd.extend(["-m", effective_model])
+    if effective_reasoning_effort:
+        cmd.extend(["-c", f'model_reasoning_effort="{effective_reasoning_effort}"'])
     if CODEX_FULL_AUTO:
         cmd.append("--full-auto")
     if CODEX_DANGEROUS_BYPASS:
@@ -1220,10 +1224,19 @@ async def run_codex(
     images: list[str] | None = None,
     suppress_progress_messages: bool = False,
     suppress_footer: bool = False,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str | None]:
     global _active_codex_proc, _watchdog_current_item, _watchdog_last_progress
 
-    cmd = build_codex_command(prompt, cwd=cwd, session_id=session_id, images=images)
+    cmd = build_codex_command(
+        prompt,
+        cwd=cwd,
+        session_id=session_id,
+        images=images,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     log.info(
         "Codex in %s: %s | prompt: %s",
         cwd,
@@ -2079,6 +2092,8 @@ async def enqueue_prompt(
     front: bool = False,
     dispatch_job_id: str | None = None,
     notify_telegram: bool = True,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ):
     global _prompt_queue
     if _prompt_queue is None:
@@ -2131,6 +2146,8 @@ async def enqueue_prompt(
         "deferred_checkpoint_rotation": deferred_rotation_id,
         "dispatch_job_id": dispatch_job_id,
         "notify_telegram": notify_telegram,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
     }
     result = await _prompt_queue.put(item, front=front)
     position = result["position"]
@@ -2264,6 +2281,8 @@ async def _process_prompt(item: dict):
     a2a_task_ids = item.get("a2a_task_ids") or []
     dispatch_job_id = item.get("dispatch_job_id")
     notify_telegram = item.get("notify_telegram", True)
+    model = item.get("model")
+    reasoning_effort = item.get("reasoning_effort")
 
     if item.get("deferred_checkpoint_rotation"):
         session_id = state["folder_sessions"].get(folder)
@@ -2322,6 +2341,8 @@ async def _process_prompt(item: dict):
             images=images,
             suppress_progress_messages=bool(a2a_reply_target) or not notify_telegram,
             suppress_footer=bool(a2a_reply_target) or not notify_telegram,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         elapsed = time.time() - start
 
@@ -2520,6 +2541,8 @@ class DispatchRequest(BaseModel):
     prompt: str
     label: str = ""
     notify_telegram: bool = True
+    model: str | None = None
+    reasoning_effort: str | None = None
 
 
 def _dispatch_token() -> str:
@@ -2569,6 +2592,11 @@ async def dispatch(
         raise HTTPException(status_code=400, detail="invalid job_id")
     if not request.prompt.strip() or len(request.prompt) > 100_000:
         raise HTTPException(status_code=400, detail="prompt must contain 1-100000 characters")
+    if request.model and not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", request.model):
+        raise HTTPException(status_code=400, detail="invalid model")
+    allowed_efforts = {"low", "medium", "high", "xhigh", "max", "ultra"}
+    if request.reasoning_effort and request.reasoning_effort not in allowed_efforts:
+        raise HTTPException(status_code=400, detail="invalid reasoning_effort")
     chat_id = BRIDGE_DISPATCH_CHAT_ID or next(iter(ALLOWED_USERS), 0)
     if not chat_id:
         raise HTTPException(status_code=503, detail="no dispatch chat id or allowed user configured")
@@ -2580,6 +2608,8 @@ async def dispatch(
         state="queued",
         label=request.label,
         notify_telegram=request.notify_telegram,
+        model=request.model or CODEX_MODEL or "default",
+        reasoning_effort=request.reasoning_effort or CODEX_REASONING_EFFORT or "default",
         queued_at=datetime.now(timezone.utc).isoformat(),
     )
     await enqueue_prompt(
@@ -2588,6 +2618,8 @@ async def dispatch(
         request.prompt,
         dispatch_job_id=request.job_id,
         notify_telegram=request.notify_telegram,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
     )
     return {"job_id": request.job_id, "state": "queued"}
 
