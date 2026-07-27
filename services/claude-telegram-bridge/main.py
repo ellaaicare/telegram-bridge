@@ -33,6 +33,7 @@ Commands:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -190,8 +191,8 @@ def _trusted_registry_bot_ids() -> set[int]:
 
 # --- Configuration ---
 
-BRIDGE_VERSION = os.environ.get("BRIDGE_VERSION", "3.5.0")
-BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "a2a-noise-harden-pr6.9c8bcef")
+BRIDGE_VERSION = os.environ.get("BRIDGE_VERSION", "3.6.0")
+BRIDGE_BUILD = os.environ.get("BRIDGE_BUILD", "mcp-dispatch-ingress-v1")
 HARNESS_CLI = os.environ.get("HARNESS_CLI", "claude").strip().lower() or "claude"
 HARNESS_LABEL = os.environ.get("HARNESS_LABEL", "").strip() or {
     "claude": "Claude Code",
@@ -262,6 +263,19 @@ STATE_FILE = (
 HOME = os.environ.get("BRIDGE_DEFAULT_FOLDER", str(Path.home()))
 MEDIA_DIR = Path("/tmp/tg-bridge-media")
 PROJECT_CHECKPOINT_ENABLED = _truthy_env("PROJECT_CHECKPOINT_ENABLED", "true")
+BRIDGE_DISPATCH_TOKEN_FILE = Path(
+    os.environ.get(
+        "BRIDGE_DISPATCH_TOKEN_FILE",
+        str(Path.home() / ".gpt5mcp" / "bridge-token"),
+    )
+).expanduser()
+BRIDGE_DISPATCH_JOB_DIR = Path(
+    os.environ.get(
+        "BRIDGE_DISPATCH_JOB_DIR",
+        str(Path.home() / ".gpt5mcp" / "bridge-jobs"),
+    )
+).expanduser()
+BRIDGE_DISPATCH_CHAT_ID = int(os.environ.get("BRIDGE_DISPATCH_CHAT_ID", "0") or "0")
 
 # --- Watchdog Configuration ---
 
@@ -307,14 +321,19 @@ WATCHDOG_INSTANT_KILL_PATTERNS = [
 
 # --- Logging ---
 
+BRIDGE_LOG_FILE = Path(
+    os.environ.get(
+        "BRIDGE_LOG_FILE",
+        f"~/.openclaw/workspace/logs/{HARNESS_SERVICE_NAME}.log",
+    )
+).expanduser()
+BRIDGE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(
-            os.path.expanduser(f"~/.openclaw/workspace/logs/{HARNESS_SERVICE_NAME}.log")
-        ),
+        logging.FileHandler(BRIDGE_LOG_FILE),
     ],
 )
 log = logging.getLogger("claude-bridge")
@@ -1894,6 +1913,8 @@ async def run_harness(
     suppress_footer: bool = False,
     cwd: str | None = None,
     use_default_session: bool = True,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str | None]:
     """Run the configured harness CLI with streaming. Sends progress to Telegram as events arrive.
 
@@ -1911,6 +1932,7 @@ async def run_harness(
         sid = session_id or state.get("default_session_id")
     else:
         sid = session_id
+    effective_model = model or BRIDGE_MODEL
 
     if HARNESS_CLI == "claude":
         cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose"]
@@ -1929,23 +1951,25 @@ async def run_harness(
                 prompt,
             ]
         )
-        if BRIDGE_MODEL:
+        if effective_model:
             # Only set ANTHROPIC_MODEL if the model is an Anthropic-compatible name.
             # Ollama/openrouter models break the real Claude CLI when injected as env.
-            if BRIDGE_MODEL.startswith("claude-") or BRIDGE_MODEL.startswith(
+            if effective_model.startswith("claude-") or effective_model.startswith(
                 "anthropic-"
             ):
-                proc_env["BRIDGE_MODEL"] = BRIDGE_MODEL
-                proc_env["ANTHROPIC_MODEL"] = BRIDGE_MODEL
+                proc_env["BRIDGE_MODEL"] = effective_model
+                proc_env["ANTHROPIC_MODEL"] = effective_model
             else:
                 # Pass non-Anthropic models via --model flag (supported by Claude CLI)
-                cmd.extend(["--model", BRIDGE_MODEL])
+                cmd.extend(["--model", effective_model])
+        if reasoning_effort:
+            cmd.extend(["--effort", reasoning_effort])
     elif HARNESS_CLI in {"opencode", "kilo"}:
         cmd = [HARNESS_CLI, "run", "--format", "json", "--dir", cwd]
         if sid:
             cmd.extend(["--session", sid])
-        if BRIDGE_MODEL:
-            cmd.extend(["-m", BRIDGE_MODEL])
+        if effective_model:
+            cmd.extend(["-m", effective_model])
         if HARNESS_AGENT:
             cmd.extend(["--agent", HARNESS_AGENT])
         cmd.append(prompt)
@@ -1953,8 +1977,8 @@ async def run_harness(
         cmd = ["grok", "-p", prompt, "--output-format", "streaming-json", "--yolo"]
         if sid:
             cmd.extend(["-s", sid])
-        if BRIDGE_MODEL:
-            cmd.extend(["-m", BRIDGE_MODEL])
+        if effective_model:
+            cmd.extend(["-m", effective_model])
         if HARNESS_AGENT:
             cmd.extend(["--agent", HARNESS_AGENT])
         # Safety hardening — Grok can also kill its own bridge process
@@ -3528,7 +3552,14 @@ async def cmd_interrupt(chat_id: int, msg_id: int, args: str):
 
 
 async def enqueue_prompt(
-    chat_id: int, msg_id: int, text: str, a2a_reply_target: str | None = None
+    chat_id: int,
+    msg_id: int,
+    text: str,
+    a2a_reply_target: str | None = None,
+    dispatch_job_id: str | None = None,
+    notify_telegram: bool = True,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ):
     """Add a prompt to the queue. Notifies user of queue position if not first."""
     global _prompt_queue
@@ -3561,11 +3592,15 @@ async def enqueue_prompt(
         "session_id": session_id,
         "pending_label": pending_label,
         "deferred_checkpoint_rotation": deferred_rotation_id,
+        "dispatch_job_id": dispatch_job_id,
+        "notify_telegram": notify_telegram,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
     }
     queue_size = _prompt_queue.qsize()
     await _prompt_queue.put(item)
 
-    if queue_size > 0:
+    if queue_size > 0 and notify_telegram:
         await send_message(
             chat_id,
             f"Queued (position {queue_size + 1}). Working on previous task...",
@@ -3598,9 +3633,18 @@ async def queue_worker():
             log.error(f"Queue worker error: {e}")
             chat_id = item.get("chat_id", 0) if isinstance(item, dict) else item[0]
             msg_id = item.get("msg_id", 0) if isinstance(item, dict) else item[1]
-            await send_message(
-                chat_id, f"Error processing message: {e}", reply_to=msg_id
-            )
+            dispatch_job_id = item.get("dispatch_job_id") if isinstance(item, dict) else None
+            if dispatch_job_id:
+                _write_dispatch_job(
+                    dispatch_job_id,
+                    state="failed",
+                    error=str(e),
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            if not isinstance(item, dict) or item.get("notify_telegram", True):
+                await send_message(
+                    chat_id, f"Error processing message: {e}", reply_to=msg_id
+                )
         finally:
             _prompt_queue.task_done()
 
@@ -3687,6 +3731,10 @@ async def _process_prompt(item: dict):
     folder = item["folder"]
     session_id = item.get("session_id")
     pending_label = item.get("pending_label")
+    dispatch_job_id = item.get("dispatch_job_id")
+    notify_telegram = item.get("notify_telegram", True)
+    model = item.get("model")
+    reasoning_effort = item.get("reasoning_effort")
     if item.get("deferred_checkpoint_rotation"):
         session_id = state["folder_sessions"].get(folder)
         pending_label = state.pop("_pending_label", None)
@@ -3701,12 +3749,23 @@ async def _process_prompt(item: dict):
     _watchdog_current_tool = None
     _watchdog_last_progress = time.time()
 
-    await send_typing(chat_id)
-    typing_task = asyncio.create_task(typing_loop(chat_id))
+    if dispatch_job_id:
+        _write_dispatch_job(
+            dispatch_job_id,
+            state="running",
+            folder=folder,
+            session_id=session_id,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    typing_task = None
+    if notify_telegram:
+        await send_typing(chat_id)
+        typing_task = asyncio.create_task(typing_loop(chat_id))
 
     # Start watchdog if enabled
     watchdog_task = None
-    if WATCHDOG_ENABLED:
+    if WATCHDOG_ENABLED and notify_telegram:
         watchdog_task = asyncio.create_task(
             _watchdog_monitor(chat_id, folder)
         )
@@ -3728,10 +3787,12 @@ async def _process_prompt(item: dict):
             text,
             chat_id,
             session_id=session_id,
-            suppress_progress_messages=bool(a2a_reply_target),
-            suppress_footer=bool(a2a_reply_target),
+            suppress_progress_messages=bool(a2a_reply_target) or not notify_telegram,
+            suppress_footer=bool(a2a_reply_target) or not notify_telegram,
             cwd=folder,
             use_default_session=False,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         elapsed = time.time() - start
 
@@ -3752,6 +3813,16 @@ async def _process_prompt(item: dict):
             "folder": folder,
         }
         save_state()
+        if dispatch_job_id:
+            _write_dispatch_job(
+                dispatch_job_id,
+                state="completed",
+                folder=folder,
+                session_id=session_id,
+                elapsed=round(elapsed, 1),
+                result=response,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
 
         pending_count = _prompt_queue.qsize() if _prompt_queue else 0
         queue_note = f", {pending_count} queued" if pending_count > 0 else ""
@@ -3775,19 +3846,21 @@ async def _process_prompt(item: dict):
         )
         if a2a_reply_target:
             await send_plain_message(chat_id, response, reply_to=msg_id)
-        else:
+        elif notify_telegram:
             await send_message(chat_id, response, reply_to=msg_id)
 
     finally:
         _active_harness_chat_id = None
         _watchdog_current_tool = None
-        typing_task.cancel()
+        if typing_task:
+            typing_task.cancel()
         if watchdog_task:
             watchdog_task.cancel()
-        try:
-            await typing_task
-        except asyncio.CancelledError:
-            pass
+        if typing_task:
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
         if watchdog_task:
             try:
                 await watchdog_task
@@ -4009,11 +4082,100 @@ async def recover_orphaned_harness():
         log.warning(f"Orphan recovery check failed: {e}")
 
 
-# --- FastAPI (health only) ---
+# --- FastAPI ---
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 app = FastAPI(title=f"{HARNESS_LABEL}-Telegram Bridge", version=BRIDGE_VERSION)
+
+
+class DispatchRequest(BaseModel):
+    job_id: str
+    prompt: str
+    label: str = ""
+    notify_telegram: bool = True
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+
+def _dispatch_token() -> str:
+    try:
+        return BRIDGE_DISPATCH_TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _write_dispatch_job(job_id: str, **patch) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", job_id):
+        raise ValueError("invalid dispatch job id")
+    BRIDGE_DISPATCH_JOB_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    BRIDGE_DISPATCH_JOB_DIR.chmod(0o700)
+    path = BRIDGE_DISPATCH_JOB_DIR / f"{job_id}.json"
+    current = {}
+    try:
+        current = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    current.update(
+        {
+            "schemaVersion": 1,
+            "job_id": job_id,
+            "bridge": BOT_USERNAME or HARNESS_SERVICE_NAME,
+            **patch,
+        }
+    )
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(current, indent=2) + "\n")
+    temp.chmod(0o600)
+    temp.replace(path)
+    return current
+
+
+@app.post("/dispatch")
+async def dispatch(
+    request: DispatchRequest,
+    x_dispatch_token: str | None = Header(default=None),
+):
+    expected = _dispatch_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="bridge dispatch token is not configured")
+    if not x_dispatch_token or not hmac.compare_digest(x_dispatch_token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request.job_id):
+        raise HTTPException(status_code=400, detail="invalid job_id")
+    if not request.prompt.strip() or len(request.prompt) > 100_000:
+        raise HTTPException(status_code=400, detail="prompt must contain 1-100000 characters")
+    if request.model and not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", request.model):
+        raise HTTPException(status_code=400, detail="invalid model")
+    allowed_efforts = {"low", "medium", "high", "xhigh", "max"}
+    if request.reasoning_effort and request.reasoning_effort not in allowed_efforts:
+        raise HTTPException(status_code=400, detail="invalid reasoning_effort")
+    chat_id = BRIDGE_DISPATCH_CHAT_ID or next(iter(ALLOWED_USERS), 0)
+    if not chat_id:
+        raise HTTPException(status_code=503, detail="no dispatch chat id or allowed user configured")
+    job_path = BRIDGE_DISPATCH_JOB_DIR / f"{request.job_id}.json"
+    if job_path.exists():
+        raise HTTPException(status_code=409, detail="job_id already exists")
+    _write_dispatch_job(
+        request.job_id,
+        state="queued",
+        label=request.label,
+        notify_telegram=request.notify_telegram,
+        model=request.model or BRIDGE_MODEL or "default",
+        reasoning_effort=request.reasoning_effort or "default",
+        queued_at=datetime.now(timezone.utc).isoformat(),
+    )
+    await enqueue_prompt(
+        chat_id,
+        0,
+        request.prompt,
+        dispatch_job_id=request.job_id,
+        notify_telegram=request.notify_telegram,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+    )
+    return {"job_id": request.job_id, "state": "queued"}
 
 
 @app.on_event("startup")
@@ -4080,6 +4242,8 @@ async def shutdown():
 @app.get("/health")
 async def health():
     sid = state.get("default_session_id")
+    queue_size = _prompt_queue.qsize() if _prompt_queue else 0
+    busy = _active_harness_proc is not None and _active_harness_proc.returncode is None
     return {
         "status": "ok",
         "service": HARNESS_SERVICE_NAME,
@@ -4095,6 +4259,10 @@ async def health():
         "cli_session_count": len(get_harness_sessions()),
         "model_override": BRIDGE_MODEL or None,
         "agent_profile": HARNESS_AGENT or None,
+        "queue": {
+            "pending": queue_size,
+            "busy": busy,
+        },
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

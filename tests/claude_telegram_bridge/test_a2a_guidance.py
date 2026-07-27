@@ -53,8 +53,8 @@ def test_allowed_bot_raw_chatter_is_silently_ignored():
 def test_bridge_version_metadata_is_exposed():
     bridge = load_bridge_module()
 
-    assert bridge.BRIDGE_VERSION == "3.5.0"
-    assert bridge.BRIDGE_BUILD == "a2a-noise-harden-pr6.9c8bcef"
+    assert bridge.BRIDGE_VERSION == "3.6.0"
+    assert bridge.BRIDGE_BUILD == "mcp-dispatch-ingress-v1"
     assert bridge.app.version == bridge.BRIDGE_VERSION
 
 
