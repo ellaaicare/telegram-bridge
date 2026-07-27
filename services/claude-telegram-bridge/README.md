@@ -47,6 +47,7 @@ CLAUDE_TIMEOUT=300
 BRIDGE_PORT=8100
 BRIDGE_DEFAULT_FOLDER=${HOME}
 BRIDGE_STATE_DIR=${HOME}/.local/state/claude-telegram-bridge
+BRIDGE_MODEL=claude-opus-5
 A2A_TRUST_REGISTRY_BOTS=true
 A2A_BOT_REGISTRY_PATH=
 A2A_RETIRED_TARGETS=linda,claude,atlas,ellaminibot,macminiclaude
@@ -88,9 +89,13 @@ work through `POST /dispatch` using `X-Dispatch-Token`. The token is read from
 and must never send or log it elsewhere. Dispatch state and final responses are
 written to `~/.gpt5mcp/bridge-jobs/<job-id>.json`.
 
-The request can supply a Claude Code model alias and effort level. Use `opus`
-for the latest Opus model. When `notify_telegram=true`, one execution is
-reported through both MCP and Telegram. Keep the bridge port loopback-only.
+The request can supply a Claude Code model and effort level. Use the fixed model
+ID `claude-opus-5` to pin Opus 5; the shorter `opus` alias follows Anthropic's
+current Opus release and can change over time. Supported effort values are
+`low`, `medium`, `high`, `xhigh`, and `max`. `BRIDGE_MODEL` controls the default
+for Telegram-originated work, while MCP dispatch requests may override the model
+and effort for one job. When `notify_telegram=true`, one execution is reported
+through both MCP and Telegram. Keep the bridge port loopback-only.
 
 ## Pull-Based Updates
 
