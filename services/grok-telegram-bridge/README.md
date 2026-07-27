@@ -107,11 +107,18 @@ servers from the selected working directory. Audit the effective configuration
 before deployment:
 
 ```bash
-grok inspect --json --cwd "${HOME}/ai-company"
+(cd "${HOME}/ai-company" && grok inspect --json)
 ```
 
 Marketplace plugins are executable supply-chain inputs. Pin and audit them
 before installation; xAI does not verify third-party marketplace plugins.
+
+If the Grok employee should be reachable from MCP before a dedicated Telegram
+bot token has been provisioned, set `TELEGRAM_POLLING_ENABLED=false`. The
+loopback `/dispatch` ingress and durable MCP job ledger remain active, while
+Telegram polling and delivery stay off. After installing a valid bot token,
+set it back to `true`, restart the bridge, and enable Telegram notification in
+the employee manifest.
 
 ## A2A & Fleet
 

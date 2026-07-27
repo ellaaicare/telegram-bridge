@@ -244,6 +244,7 @@ BOT_USERNAME = ""
 BOT_ID: int | None = None
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "").strip()
+TELEGRAM_POLLING_ENABLED = _truthy_env("TELEGRAM_POLLING_ENABLED", "true")
 GROK_BRIDGE_SANDBOX = (
     os.environ.get("GROK_BRIDGE_SANDBOX", "workspace").strip().lower()
     or "workspace"
@@ -4302,7 +4303,10 @@ async def startup():
     _prompt_queue = asyncio.Queue()
     _queue_worker_task = asyncio.create_task(queue_worker())
     _queue_health_task = asyncio.create_task(_queue_health_monitor())
-    asyncio.create_task(poll_loop())
+    if TELEGRAM_POLLING_ENABLED:
+        asyncio.create_task(poll_loop())
+    else:
+        log.info("Telegram polling disabled; MCP dispatch ingress remains active")
 
 
 @app.on_event("shutdown")
@@ -4344,7 +4348,7 @@ async def health():
         "harness_label": HARNESS_LABEL,
         "version": BRIDGE_VERSION,
         "build": BRIDGE_BUILD,
-        "mode": "long-polling",
+        "mode": "long-polling" if TELEGRAM_POLLING_ENABLED else "mcp-only",
         "active_folder": state.get("active_folder"),
         "folder_count": len(state.get("folders", {})),
         "default_session": sid[:8] if sid else None,
