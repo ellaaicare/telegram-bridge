@@ -464,6 +464,157 @@ def test_kilo_run_uses_model_and_agent_flags():
     )
 
 
+def test_grok_run_resumes_current_session_with_model_effort_and_sandbox():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "grok",
+            "HARNESS_LABEL": "Grok Build",
+            "HARNESS_SERVICE_NAME": "grok-telegram-bridge",
+            "HARNESS_AGENT": "",
+            "BRIDGE_MODEL": "grok-4.5",
+            "GROK_BRIDGE_SANDBOX": "workspace",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": "/tmp/grok-telegram-bridge-test-state",
+        }
+    )
+    bridge.state["active_folder"] = "/tmp"
+    captured = {}
+
+    async def exercise():
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [
+                        b'{"type":"thought","data":"Checking the repository."}\n',
+                        b'{"type":"text","data":"Grok session "}\n',
+                        b'{"type":"text","data":"ready."}\n',
+                        b'{"type":"end","sessionId":"gr-789"}\n',
+                    ]
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+                self.returncode = 0
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_harness(
+            "Check Grok status.",
+            1,
+            session_id="12345678-1234-1234-1234-123456789abc",
+            use_default_session=False,
+            suppress_progress_messages=True,
+            suppress_footer=True,
+            model="grok-4.5",
+            reasoning_effort="high",
+        )
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert response == "Grok session ready."
+    assert session_id == "gr-789"
+    assert captured["args"] == (
+        "grok",
+        "--no-auto-update",
+        "-p",
+        "Check Grok status.",
+        "--output-format",
+        "streaming-json",
+        "--always-approve",
+        "--resume",
+        "12345678-1234-1234-1234-123456789abc",
+        "-m",
+        "grok-4.5",
+        "--effort",
+        "high",
+        "--sandbox",
+        "workspace",
+        "--rules",
+        "IMPORTANT: You are running inside the Telegram bridge service on a remote machine. "
+        "NEVER run systemctl, service, kill, pkill, or any process management commands "
+        "(systemctl, kill, pkill, service, restart, stop). These will kill your own host process and crash the bridge. "
+        "If the user asks about service status, restarting things, or infrastructure commands, "
+        "politely explain that you cannot perform those actions from inside the bridge.",
+        "--cwd",
+        "/tmp",
+    )
+    assert "-s" not in captured["args"]
+
+
+def test_grok_streaming_error_is_returned_to_dispatcher():
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "grok",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": "/tmp/grok-telegram-bridge-error-test-state",
+        }
+    )
+    bridge.state["active_folder"] = "/tmp"
+
+    async def exercise():
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter(
+                    [b'{"type":"error","message":"Authentication expired"}\n']
+                )
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            async def read(self):
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+                self.returncode = 1
+
+            async def wait(self):
+                return 1
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_harness(
+            "Check auth.",
+            1,
+            suppress_progress_messages=True,
+            suppress_footer=True,
+        )
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert response == "Error: Authentication expired"
+    assert session_id is None
+
+
 def test_health_uses_harness_metadata():
     bridge = load_bridge_module(
         {

@@ -244,6 +244,10 @@ BOT_USERNAME = ""
 BOT_ID: int | None = None
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "").strip()
+GROK_BRIDGE_SANDBOX = (
+    os.environ.get("GROK_BRIDGE_SANDBOX", "workspace").strip().lower()
+    or "workspace"
+)
 TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(
     os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300")
@@ -1974,11 +1978,25 @@ async def run_harness(
             cmd.extend(["--agent", HARNESS_AGENT])
         cmd.append(prompt)
     elif HARNESS_CLI == "grok":
-        cmd = ["grok", "-p", prompt, "--output-format", "streaming-json", "--yolo"]
+        cmd = [
+            "grok",
+            "--no-auto-update",
+            "-p",
+            prompt,
+            "--output-format",
+            "streaming-json",
+            "--always-approve",
+        ]
         if sid:
-            cmd.extend(["-s", sid])
+            # Current Grok Build reserves --session-id/-s for creating a new
+            # UUID session. Existing long-lived sessions must use --resume.
+            cmd.extend(["--resume", sid])
         if effective_model:
             cmd.extend(["-m", effective_model])
+        if reasoning_effort:
+            cmd.extend(["--effort", reasoning_effort])
+        if GROK_BRIDGE_SANDBOX:
+            cmd.extend(["--sandbox", GROK_BRIDGE_SANDBOX])
         if HARNESS_AGENT:
             cmd.extend(["--agent", HARNESS_AGENT])
         # Safety hardening — Grok can also kill its own bridge process
@@ -2123,6 +2141,9 @@ async def run_harness(
                     # Grok doesn't emit duration_ms the same way; we can leave it 0 or estimate later
                     if result_text is None:
                         result_text = ""
+                elif event_type == "error":
+                    message = event.get("message") or event.get("data") or "unknown error"
+                    result_text = f"Error: {message}"
 
         # Wait for process to fully exit
         await proc.wait()
@@ -2146,6 +2167,8 @@ async def run_harness(
                     suppress_footer=suppress_footer,
                     cwd=cwd,
                     use_default_session=False,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
                 )
             return f"(empty response)\n\nstderr: {err[:300]}", None
 
