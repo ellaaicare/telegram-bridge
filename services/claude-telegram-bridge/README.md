@@ -17,6 +17,7 @@ bridges side by side without manually porting patches between machines.
 - Watchdog for stuck Claude tool calls
 - Optional job dispatch to configured local or SSH nodes
 - `GET /health` endpoint for local health checks
+- Authenticated local `POST /dispatch` ingress for MCP-managed employees
 - Shared A2A bot handoff protocol with the Codex bridge
 
 ## Requirements
@@ -80,6 +81,16 @@ Health check:
 ```bash
 curl http://127.0.0.1:${BRIDGE_PORT:-8100}/health
 ```
+
+The bridge binds to loopback by default. A trusted local dispatcher can enqueue
+work through `POST /dispatch` using `X-Dispatch-Token`. The token is read from
+`~/.gpt5mcp/bridge-token` by default; callers should read it on the bridge host
+and must never send or log it elsewhere. Dispatch state and final responses are
+written to `~/.gpt5mcp/bridge-jobs/<job-id>.json`.
+
+The request can supply a Claude Code model alias and effort level. Use `opus`
+for the latest Opus model. When `notify_telegram=true`, one execution is
+reported through both MCP and Telegram. Keep the bridge port loopback-only.
 
 ## Pull-Based Updates
 
