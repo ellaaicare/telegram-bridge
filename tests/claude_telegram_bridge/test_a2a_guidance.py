@@ -615,6 +615,107 @@ def test_grok_streaming_error_is_returned_to_dispatcher():
     assert session_id is None
 
 
+def test_grok_missing_remote_session_is_quarantined_and_retried(tmp_path):
+    bridge = load_bridge_module(
+        {
+            "HARNESS_CLI": "grok",
+            "HARNESS_AGENT": "",
+            "BRIDGE_MODEL": "grok-4.5",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "BRIDGE_STATE_DIR": str(tmp_path),
+        }
+    )
+    stale_session = "019eb2f5-50b2-7bc3-b43d-4d7d050fea80"
+    fresh_session = "019fac00-0000-7000-8000-000000000001"
+    bridge.STATE_FILE = tmp_path / "state.json"
+    bridge.state["active_folder"] = str(tmp_path)
+    bridge.state["default_session_id"] = stale_session
+    bridge.state["folder_sessions"] = {str(tmp_path): stale_session}
+    bridge.state["sessions"] = {
+        stale_session: {
+            "folder": str(tmp_path),
+            "last_used": "2026-06-10T19:16:30+00:00",
+        }
+    }
+    invocations = []
+
+    async def exercise():
+        class FakeStdout:
+            def __init__(self, lines):
+                self.lines = lines
+
+            def __aiter__(self):
+                self._lines = iter(self.lines)
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeStderr:
+            def __init__(self, value):
+                self.value = value
+
+            async def read(self):
+                return self.value
+
+        class FakeProc:
+            def __init__(self, lines, stderr, returncode):
+                self.stdout = FakeStdout(lines)
+                self.stderr = FakeStderr(stderr)
+                self.returncode = returncode
+
+            async def wait(self):
+                return self.returncode
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            invocations.append(args)
+            if len(invocations) == 1:
+                return FakeProc(
+                    [],
+                    (
+                        b'Session "019eb2f5-50b2-7bc3-b43d-4d7d050fea80" '
+                        b"not found locally, restoring from remote...\n"
+                        b"Error: Failed to restore session from remote: "
+                        b"session get failed: 404 Not Found\n"
+                    ),
+                    1,
+                )
+            return FakeProc(
+                [
+                    b'{"type":"text","data":"FRESH_SESSION_OK"}\n',
+                    (
+                        b'{"type":"end","sessionId":"'
+                        + fresh_session.encode()
+                        + b'"}\n'
+                    ),
+                ],
+                b"",
+                0,
+            )
+
+        bridge.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+        return await bridge.run_harness(
+            "Start cleanly.",
+            1,
+            suppress_progress_messages=True,
+            suppress_footer=True,
+        )
+
+    response, session_id = __import__("asyncio").run(exercise())
+
+    assert response == "FRESH_SESSION_OK"
+    assert session_id == fresh_session
+    assert "--resume" in invocations[0]
+    assert stale_session in invocations[0]
+    assert "--resume" not in invocations[1]
+    assert bridge.state["default_session_id"] is None
+    assert str(tmp_path) not in bridge.state["folder_sessions"]
+    assert bridge.state["sessions"][stale_session]["quarantined"] is True
+
+
 def test_health_uses_harness_metadata():
     bridge = load_bridge_module(
         {

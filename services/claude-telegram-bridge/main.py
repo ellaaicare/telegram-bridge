@@ -1407,9 +1407,27 @@ def _is_invalid_tool_use_resume_error(text: str | None) -> bool:
     )
 
 
-def quarantine_session(session_id: str, reason: str):
+def _is_missing_session_resume_error(text: str | None) -> bool:
+    """Recognize local and remote CLI failures for a stale resume pointer."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return (
+        "no conversation found" in lowered
+        or "no recent" in lowered
+        or "failed to restore session from remote" in lowered
+        or "session get failed: 404" in lowered
+        or ("session" in lowered and "not found locally" in lowered)
+    )
+
+
+def quarantine_session(
+    session_id: str,
+    reason: str,
+    folder_path: str | None = None,
+):
     """Remove a bad session from active resume pointers without deleting history."""
-    folder = state.get("active_folder")
+    folder = folder_path or state.get("active_folder")
     if state.get("default_session_id") == session_id:
         state["default_session_id"] = None
     if folder and state.get("folder_sessions", {}).get(folder) == session_id:
@@ -2156,10 +2174,20 @@ async def run_harness(
             if proc.stderr:
                 err_bytes = await proc.stderr.read()
                 err = err_bytes.decode("utf-8", errors="replace").strip()
-            if (
-                "No conversation found" in err or "no recent" in err.lower()
-            ) and not new_session:
-                log.info("No existing session found, starting fresh")
+            if _is_missing_session_resume_error(err) and not new_session:
+                if sid:
+                    log.warning(
+                        "Quarantining missing %s session %s and starting fresh",
+                        HARNESS_LABEL,
+                        sid,
+                    )
+                    quarantine_session(
+                        sid,
+                        f"{HARNESS_LABEL} could not resume the session: {err[:200]}",
+                        folder_path=cwd,
+                    )
+                else:
+                    log.info("No existing session found, starting fresh")
                 return await run_harness(
                     prompt,
                     chat_id,
