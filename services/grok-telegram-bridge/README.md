@@ -12,7 +12,7 @@ Telegram long-polling bridge for the local `grok` CLI (xAI Grok Build TUI headle
 - Independent state, port, and service defaults for a Grok Build bot
 - Access to Grok's full tool set (read/edit files, shell, web, subagents, MCP, etc.) via Telegram
 - Session continuity via Grok's native `--resume <session-id>` behavior
-- Configurable Grok sandbox profile (`workspace` by default)
+- Configurable Grok sandbox profile (`off` for the general-purpose Mini employee)
 - Dual delivery for MCP-dispatched jobs: progress/final output in Telegram and
   durable results for the calling MCP client
 
@@ -38,8 +38,9 @@ HARNESS_LABEL="Grok Build"
 HARNESS_SERVICE_NAME=grok-telegram-bridge
 HARNESS_SESSION_BACKEND=bridge
 BRIDGE_PORT=8140
-BRIDGE_DEFAULT_FOLDER=${HOME}
+BRIDGE_DEFAULT_FOLDER=${HOME}/dev
 BRIDGE_STATE_DIR=${HOME}/.local/state/grok-telegram-bridge
+GROK_BRIDGE_SANDBOX=off
 ALLOWED_CHAT_IDS=-1
 A2A_TRUST_REGISTRY_BOTS=false
 A2A_PROGRESS_MODE=status
@@ -83,7 +84,7 @@ For a new session, the bridge uses:
 ```
 grok --no-auto-update -p "<prompt>" --output-format streaming-json \
   --always-approve --model grok-4.5 --effort high \
-  --sandbox workspace --cwd "<folder>"
+  --sandbox off --cwd "<folder>"
 ```
 
 For an existing session it adds `--resume "<session-id>"`. Do not substitute
@@ -93,6 +94,29 @@ to a *new* conversation and rejects existing session IDs.
 The streaming parser handles `text`, `thought`, `end`, and `error` events.
 Thoughts are reduced to throttled progress notices rather than being copied
 verbatim into the final response.
+
+## Repository and Worktree Layout
+
+On the Mac Mini, launch the general-purpose employee from `${HOME}/dev`. That
+is the stable repository namespace; individual repositories may be symlinks
+into an external volume.
+
+For any write task, create or select an isolated worktree at:
+
+```text
+${HOME}/worktrees/<repo>-minigrok-<task>
+```
+
+`${HOME}/worktrees` should itself resolve to the external worktree volume.
+Do not create repositories or worktrees inside `${HOME}/ai-company`, write
+directly to a shared primary checkout without explicit authorization, or reuse
+another employee's active worktree.
+
+The general-purpose employee uses `GROK_BRIDGE_SANDBOX=off` because repository
+and worktree symlinks can resolve outside `${HOME}/dev`; Grok's workspace
+sandbox would block those external targets. This setting is appropriate only
+for the private owner-only bridge on a trusted host. A bridge pinned to one
+real, non-symlinked worktree can instead use `workspace`.
 
 ## Authentication
 
@@ -115,7 +139,7 @@ servers from the selected working directory. Audit the effective configuration
 before deployment:
 
 ```bash
-(cd "${HOME}/ai-company" && grok inspect --json)
+(cd "${HOME}/dev" && grok inspect --json)
 ```
 
 Marketplace plugins are executable supply-chain inputs. Pin and audit them
