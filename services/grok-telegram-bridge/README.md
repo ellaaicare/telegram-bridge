@@ -40,7 +40,8 @@ HARNESS_SESSION_BACKEND=bridge
 BRIDGE_PORT=8140
 BRIDGE_DEFAULT_FOLDER=${HOME}
 BRIDGE_STATE_DIR=${HOME}/.local/state/grok-telegram-bridge
-A2A_TRUST_REGISTRY_BOTS=true
+ALLOWED_CHAT_IDS=-1
+A2A_TRUST_REGISTRY_BOTS=false
 A2A_PROGRESS_MODE=status
 WATCHDOG_ENABLED=false
 ```
@@ -48,6 +49,13 @@ WATCHDOG_ENABLED=false
 `/model` and MCP dispatch model overrides are passed with `grok -m`. Reasoning
 effort is passed with `--effort`; supported dispatcher values are `low`,
 `medium`, `high`, `xhigh`, and `max`.
+
+The checked-in Grok configuration is private-only: `ALLOWED_USER_IDS` and
+`ALLOWED_SENDER_IDS` must contain the owner's numeric Telegram ID,
+`ALLOWED_CHAT_IDS=-1` rejects all groups, `ALLOWED_BOT_IDS` remains empty, and
+`A2A_TRUST_REGISTRY_BOTS=false` prevents registry bots from becoming accepted
+senders. The token-authenticated loopback MCP dispatcher remains available and
+can still deliver progress and final results to the owner's private chat.
 
 ## Local Setup
 
