@@ -278,6 +278,7 @@ CODEX_PROGRESS_UPDATE_INTERVAL = _bounded_int_env(
 CODEX_MAX_RUNTIME = _bounded_int_env("CODEX_MAX_RUNTIME", 7200, 60, 86400)
 # Grace between SIGTERM and SIGKILL when the ceiling is hit.
 CODEX_KILL_GRACE = _bounded_int_env("CODEX_KILL_GRACE", 10, 1, 60)
+PROGRESS_NOTIFIER_STOP_TIMEOUT = 1.0
 LOG_FILE = os.environ.get(
     "CODEX_BRIDGE_LOG_FILE",
     str(Path.home() / "codex-bridge" / "logs" / "codex-telegram-bridge.log"),
@@ -1476,12 +1477,22 @@ async def _finalize_codex_child(
         await _terminate_child(proc, "run_codex exit before child completion")
 
     if progress_task is not None:
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(progress_task, return_exceptions=True), timeout=1
-            )
-        except asyncio.TimeoutError:
+        done, pending = await asyncio.wait(
+            {progress_task}, timeout=PROGRESS_NOTIFIER_STOP_TIMEOUT
+        )
+        if pending:
             log.warning("Progress notifier did not stop within one second")
+            progress_task.add_done_callback(_consume_background_task_result)
+
+
+def _consume_background_task_result(task: asyncio.Task) -> None:
+    """Retrieve a detached best-effort task's result without raising in the loop."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        log.warning("Detached progress notifier failed: %s", type(exc).__name__)
 
 
 async def _wait_child_bounded(
@@ -1527,20 +1538,28 @@ async def _terminate_child(
     log.error("Terminating Codex child pid=%s: %s", proc.pid, reason)
     try:
         proc.terminate()
+    except ProcessLookupError:
+        # The process exited between the returncode check and signal delivery.
+        pass
+
+    try:
         await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
         log.error("Codex child pid=%s terminated on SIGTERM", proc.pid)
+        return
     except asyncio.TimeoutError:
+        pass
+
+    try:
         proc.kill()  # SIGKILL: a child that ignores SIGTERM must not pin busy
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("codex_child_unreaped_after_sigkill") from exc
-        log.error("Codex child pid=%s SIGKILLed after grace", proc.pid)
     except ProcessLookupError:
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("codex_child_unreaped_after_process_lookup") from exc
+        # Still reap: asyncio may not have published returncode yet.
+        pass
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("codex_child_unreaped_after_sigkill") from exc
+    log.error("Codex child pid=%s SIGKILLed after grace", proc.pid)
 
 
 # --- Watchdog ---

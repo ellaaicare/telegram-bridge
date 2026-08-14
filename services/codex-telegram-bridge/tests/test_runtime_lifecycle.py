@@ -63,6 +63,7 @@ class _Process:
         completed=False,
         ignore_term=False,
         ignore_kill=False,
+        lookup_on_kill=False,
     ):
         type(self)._next_pid += 1
         self.pid = type(self)._next_pid
@@ -73,6 +74,7 @@ class _Process:
         self.killed = False
         self.ignore_term = ignore_term
         self.ignore_kill = ignore_kill
+        self.lookup_on_kill = lookup_on_kill
         self._done = asyncio.Event()
         if completed:
             self._done.set()
@@ -90,6 +92,10 @@ class _Process:
 
     def kill(self):
         self.killed = True
+        if self.lookup_on_kill:
+            self.returncode = -9
+            self._done.set()
+            raise ProcessLookupError
         if self.ignore_kill:
             return
         self.returncode = -9
@@ -113,6 +119,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.old_runtime = main.CODEX_MAX_RUNTIME
         self.old_grace = main.CODEX_KILL_GRACE
         self.old_interval = main.CODEX_PROGRESS_UPDATE_INTERVAL
+        self.old_notifier_stop_timeout = main.PROGRESS_NOTIFIER_STOP_TIMEOUT
         main.CODEX_MAX_RUNTIME = 0.03
         main.CODEX_KILL_GRACE = 0.01
 
@@ -120,6 +127,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         main.CODEX_MAX_RUNTIME = self.old_runtime
         main.CODEX_KILL_GRACE = self.old_grace
         main.CODEX_PROGRESS_UPDATE_INTERVAL = self.old_interval
+        main.PROGRESS_NOTIFIER_STOP_TIMEOUT = self.old_notifier_stop_timeout
         main._active_codex_proc = None
         main._active_codex_started = None
         main._active_codex_started_monotonic = None
@@ -188,6 +196,15 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await main._terminate_child(process, "test")
         self.assertIsNone(process.returncode)
 
+    async def test_sigkill_process_lookup_race_is_still_reaped(self):
+        process = _Process(
+            _Stdout("silent"), ignore_term=True, lookup_on_kill=True
+        )
+        await main._terminate_child(process, "test")
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertIsNotNone(process.returncode)
+
     async def test_unreaped_child_keeps_bridge_ownership(self):
         process = _Process(
             _Stdout("error"), ignore_term=True, ignore_kill=True
@@ -226,6 +243,30 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual("done", response)
         self.assertIsNone(main._active_codex_proc)
+
+    async def test_cancellation_resistant_notifier_cannot_delay_finalizer(self):
+        main.PROGRESS_NOTIFIER_STOP_TIMEOUT = 0.01
+        release = asyncio.Event()
+
+        async def cancellation_resistant_notifier():
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        notifier = asyncio.create_task(cancellation_resistant_notifier())
+        await asyncio.sleep(0)
+        process = _Process(_Stdout("lines"), completed=True)
+        started = time.monotonic()
+        await asyncio.wait_for(
+            main._finalize_codex_child(process, asyncio.Event(), notifier), 0.1
+        )
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertFalse(notifier.done())
+
+        release.set()
+        await asyncio.wait_for(notifier, 0.1)
 
     async def test_progress_notifier_stops_without_false_short_turn_update(self):
         sent = []
