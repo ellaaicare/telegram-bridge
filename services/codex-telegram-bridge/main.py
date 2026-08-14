@@ -265,9 +265,11 @@ CODEX_PROGRESS_UPDATE_INTERVAL = max(
 # unbounded and head-of-line-block the queue, because `busy` is derived purely from the
 # child's returncode. Keep this materially longer than the progress-update interval so
 # a healthy turn is not mistaken for a status checkpoint.
-CODEX_MAX_RUNTIME = int(os.environ.get("CODEX_MAX_RUNTIME", "7200"))
+CODEX_MAX_RUNTIME = max(60, int(os.environ.get("CODEX_MAX_RUNTIME", "7200")))
 # Grace between SIGTERM and SIGKILL when the ceiling is hit.
-CODEX_KILL_GRACE = int(os.environ.get("CODEX_KILL_GRACE", "10"))
+CODEX_KILL_GRACE = max(
+    1, min(60, int(os.environ.get("CODEX_KILL_GRACE", "10")))
+)
 LOG_FILE = os.environ.get(
     "CODEX_BRIDGE_LOG_FILE",
     str(Path.home() / "codex-bridge" / "logs" / "codex-telegram-bridge.log"),
@@ -771,7 +773,8 @@ class PromptQueue:
 
 _active_codex_proc: asyncio.subprocess.Process | None = None
 _active_codex_chat_id: int | None = None
-_active_codex_started: float | None = None  # monotonic-ish wall start of the active child
+_active_codex_started: float | None = None  # UTC wall clock for operator health output
+_active_codex_started_monotonic: float | None = None  # duration/deadline authority
 _shutting_down = False
 
 _watchdog_current_item: dict | None = None
@@ -1231,7 +1234,7 @@ def _describe_command_execution(item: dict) -> str:
 
 async def _notify_turn_progress(
     chat_id: int,
-    started_at: float,
+    started_monotonic: float,
     stop_event: asyncio.Event,
 ) -> None:
     """Send content-free status checkpoints without stopping the active turn."""
@@ -1245,7 +1248,9 @@ async def _notify_turn_progress(
             )
             return
         except asyncio.TimeoutError:
-            elapsed_minutes = max(1, int((time.time() - started_at) // 60))
+            elapsed_minutes = max(
+                1, int((time.monotonic() - started_monotonic) // 60)
+            )
             try:
                 await send_message(
                     chat_id,
@@ -1270,7 +1275,8 @@ async def run_codex(
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> tuple[str, str | None]:
-    global _active_codex_proc, _active_codex_started, _watchdog_current_item, _watchdog_last_progress
+    global _active_codex_proc, _active_codex_started, _active_codex_started_monotonic
+    global _watchdog_current_item, _watchdog_last_progress
 
     cmd = build_codex_command(
         prompt,
@@ -1301,32 +1307,47 @@ async def run_codex(
     )
     _active_codex_proc = proc
     _active_codex_started = time.time()
+    _active_codex_started_monotonic = time.monotonic()
     progress_stop = asyncio.Event()
     progress_task: asyncio.Task | None = None
     if not suppress_progress_messages:
         progress_task = asyncio.create_task(
-            _notify_turn_progress(chat_id, _active_codex_started, progress_stop)
+            _notify_turn_progress(
+                chat_id, _active_codex_started_monotonic, progress_stop
+            )
         )
 
     hit_ceiling = False
     try:
-        async for raw_line in proc.stdout:
-            # ella-ai#1174 follow-up. The ceiling MUST be checked here, not only in
-            # _wait_child_bounded() below: that call sits after this loop, so a child
-            # that keeps emitting events never reaches it and runs unbounded. Henry's
-            # bridge sat busy 55 minutes against a 30-minute cap on 2026-08-13 while
-            # still streaming, and CODEX_MAX_RUNTIME had never fired once in the log.
-            # Breaking out lands on _wait_child_bounded(), which sees the deadline
-            # already passed and does the SIGTERM->SIGKILL escalation.
-            if _active_codex_started and (
-                time.time() - _active_codex_started
-            ) > CODEX_MAX_RUNTIME:
+        while True:
+            # Bound the read itself. An `async for` deadline check cannot stop a live
+            # child that holds stdout open without emitting another line.
+            remaining = CODEX_MAX_RUNTIME - (
+                time.monotonic() - _active_codex_started_monotonic
+            )
+            if remaining <= 0:
                 hit_ceiling = True
                 log.error(
                     "Codex child pid=%s hit CODEX_MAX_RUNTIME (%.0fs > %ss) mid-stream "
                     "-- ending the turn",
-                    proc.pid, time.time() - _active_codex_started, CODEX_MAX_RUNTIME,
+                    proc.pid,
+                    time.monotonic() - _active_codex_started_monotonic,
+                    CODEX_MAX_RUNTIME,
                 )
+                break
+
+            try:
+                raw_line = await asyncio.wait_for(
+                    proc.stdout.readline(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                hit_ceiling = True
+                log.error(
+                    "Codex child pid=%s hit CODEX_MAX_RUNTIME while stdout was idle",
+                    proc.pid,
+                )
+                break
+            if not raw_line:
                 break
 
             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1370,7 +1391,7 @@ async def run_codex(
             elif event_type == "error":
                 latest_agent_message = event.get("message", "Codex execution failed")
 
-        await _wait_child_bounded(proc)
+        await _wait_child_bounded(proc, _active_codex_started_monotonic)
 
         if hit_ceiling:
             # Say so rather than returning a silently-truncated answer as if complete.
@@ -1404,14 +1425,19 @@ async def run_codex(
         progress_stop.set()
         if progress_task is not None:
             await asyncio.gather(progress_task, return_exceptions=True)
+        if proc.returncode is None:
+            await _terminate_child(proc, "run_codex exit before child completion")
         # ella-ai#1174: `busy` is computed from _active_codex_proc.returncode, so ANY path
         # that leaves this set with a live child pins the bridge busy forever and the queue
         # never drains. Clearing it here makes that structurally impossible.
         _active_codex_proc = None
         _active_codex_started = None
+        _active_codex_started_monotonic = None
 
 
-async def _wait_child_bounded(proc: asyncio.subprocess.Process) -> None:
+async def _wait_child_bounded(
+    proc: asyncio.subprocess.Process, started_monotonic: float
+) -> None:
     """Wait for the codex child, with an absolute ceiling and SIGTERM->SIGKILL escalation.
 
     ella-ai#1174. This replaced a bare `await proc.wait()`, which had NO timeout at all --
@@ -1423,9 +1449,8 @@ async def _wait_child_bounded(proc: asyncio.subprocess.Process) -> None:
     it, so we never destroy a healthy long-running turn to satisfy a timer. Stagnation
     (progress stopped) remains the existing watchdog's job.
     """
-    started = _active_codex_started or time.time()
     while True:
-        remaining = CODEX_MAX_RUNTIME - (time.time() - started)
+        remaining = CODEX_MAX_RUNTIME - (time.monotonic() - started_monotonic)
         if remaining <= 0:
             break
         try:
@@ -1434,11 +1459,23 @@ async def _wait_child_bounded(proc: asyncio.subprocess.Process) -> None:
         except asyncio.TimeoutError:
             continue  # still running; re-check the ceiling
 
-    age = time.time() - started
+    age = time.monotonic() - started_monotonic
     log.error(
         "Codex child pid=%s exceeded CODEX_MAX_RUNTIME (%.0fs > %ss) -- escalating",
         proc.pid, age, CODEX_MAX_RUNTIME,
     )
+    await _terminate_child(proc, "absolute runtime ceiling")
+
+
+async def _terminate_child(
+    proc: asyncio.subprocess.Process, reason: str
+) -> None:
+    """Terminate and reap a child before releasing bridge ownership."""
+    if proc.returncode is not None:
+        await proc.wait()
+        return
+
+    log.error("Terminating Codex child pid=%s: %s", proc.pid, reason)
     try:
         proc.terminate()
         await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
@@ -1451,7 +1488,7 @@ async def _wait_child_bounded(proc: asyncio.subprocess.Process) -> None:
         except Exception as exc:
             log.error("Codex child pid=%s survived SIGKILL: %s", proc.pid, exc)
     except ProcessLookupError:
-        pass  # already gone between the ceiling check and terminate()
+        await proc.wait()
 
 
 # --- Watchdog ---
