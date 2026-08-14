@@ -256,6 +256,18 @@ WATCHDOG_ENABLED = os.environ.get("WATCHDOG_ENABLED", "true").lower() == "true"
 WATCHDOG_COMMAND_TIMEOUT = int(os.environ.get("WATCHDOG_COMMAND_TIMEOUT", "900"))
 WATCHDOG_DEFAULT_TIMEOUT = int(os.environ.get("WATCHDOG_DEFAULT_TIMEOUT", "180"))
 WATCHDOG_STAGNATION_KILL = int(os.environ.get("WATCHDOG_STAGNATION_KILL", "1800"))
+# A long-running turn reports progress at this interval without interrupting the child.
+CODEX_PROGRESS_UPDATE_INTERVAL = max(
+    0, int(os.environ.get("CODEX_PROGRESS_UPDATE_INTERVAL", "1800"))
+)
+# ella-ai#1174: absolute ceiling on a single child. The stagnation watchdog above only
+# fires when progress STOPS; a child that keeps emitting events can otherwise run
+# unbounded and head-of-line-block the queue, because `busy` is derived purely from the
+# child's returncode. Keep this materially longer than the progress-update interval so
+# a healthy turn is not mistaken for a status checkpoint.
+CODEX_MAX_RUNTIME = int(os.environ.get("CODEX_MAX_RUNTIME", "7200"))
+# Grace between SIGTERM and SIGKILL when the ceiling is hit.
+CODEX_KILL_GRACE = int(os.environ.get("CODEX_KILL_GRACE", "10"))
 LOG_FILE = os.environ.get(
     "CODEX_BRIDGE_LOG_FILE",
     str(Path.home() / "codex-bridge" / "logs" / "codex-telegram-bridge.log"),
@@ -759,6 +771,7 @@ class PromptQueue:
 
 _active_codex_proc: asyncio.subprocess.Process | None = None
 _active_codex_chat_id: int | None = None
+_active_codex_started: float | None = None  # monotonic-ish wall start of the active child
 _shutting_down = False
 
 _watchdog_current_item: dict | None = None
@@ -1216,6 +1229,36 @@ def _describe_command_execution(item: dict) -> str:
     return f"Running: `{_redact_log_text(command)[:80]}`"
 
 
+async def _notify_turn_progress(
+    chat_id: int,
+    started_at: float,
+    stop_event: asyncio.Event,
+) -> None:
+    """Send content-free status checkpoints without stopping the active turn."""
+    if CODEX_PROGRESS_UPDATE_INTERVAL <= 0:
+        return
+
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=CODEX_PROGRESS_UPDATE_INTERVAL
+            )
+            return
+        except asyncio.TimeoutError:
+            elapsed_minutes = max(1, int((time.time() - started_at) // 60))
+            try:
+                await send_message(
+                    chat_id,
+                    f"_Still working: {elapsed_minutes} minutes elapsed. "
+                    "This is a status update; the turn is continuing._",
+                )
+            except Exception as exc:
+                log.warning(
+                    "Unable to send turn progress checkpoint: %s",
+                    type(exc).__name__,
+                )
+
+
 async def run_codex(
     prompt: str,
     chat_id: int,
@@ -1227,7 +1270,7 @@ async def run_codex(
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> tuple[str, str | None]:
-    global _active_codex_proc, _watchdog_current_item, _watchdog_last_progress
+    global _active_codex_proc, _active_codex_started, _watchdog_current_item, _watchdog_last_progress
 
     cmd = build_codex_command(
         prompt,
@@ -1257,9 +1300,35 @@ async def run_codex(
         limit=4 * 1024 * 1024,
     )
     _active_codex_proc = proc
+    _active_codex_started = time.time()
+    progress_stop = asyncio.Event()
+    progress_task: asyncio.Task | None = None
+    if not suppress_progress_messages:
+        progress_task = asyncio.create_task(
+            _notify_turn_progress(chat_id, _active_codex_started, progress_stop)
+        )
 
+    hit_ceiling = False
     try:
         async for raw_line in proc.stdout:
+            # ella-ai#1174 follow-up. The ceiling MUST be checked here, not only in
+            # _wait_child_bounded() below: that call sits after this loop, so a child
+            # that keeps emitting events never reaches it and runs unbounded. Henry's
+            # bridge sat busy 55 minutes against a 30-minute cap on 2026-08-13 while
+            # still streaming, and CODEX_MAX_RUNTIME had never fired once in the log.
+            # Breaking out lands on _wait_child_bounded(), which sees the deadline
+            # already passed and does the SIGTERM->SIGKILL escalation.
+            if _active_codex_started and (
+                time.time() - _active_codex_started
+            ) > CODEX_MAX_RUNTIME:
+                hit_ceiling = True
+                log.error(
+                    "Codex child pid=%s hit CODEX_MAX_RUNTIME (%.0fs > %ss) mid-stream "
+                    "-- ending the turn",
+                    proc.pid, time.time() - _active_codex_started, CODEX_MAX_RUNTIME,
+                )
+                break
+
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1301,8 +1370,18 @@ async def run_codex(
             elif event_type == "error":
                 latest_agent_message = event.get("message", "Codex execution failed")
 
-        await proc.wait()
-        _active_codex_proc = None
+        await _wait_child_bounded(proc)
+
+        if hit_ceiling:
+            # Say so rather than returning a silently-truncated answer as if complete.
+            mins = CODEX_MAX_RUNTIME // 60
+            note = (
+                f"\n\n_Turn stopped at the {mins}-minute ceiling. "
+                f"This is a partial result -- ask me to continue if it was still useful._"
+            )
+            latest_agent_message = (
+                latest_agent_message or "_No output produced before the ceiling._"
+            ) + note
 
         if latest_agent_message is None:
             err = ""
@@ -1319,9 +1398,60 @@ async def run_codex(
         footer = f"\n\n_({' • '.join(footer_parts)})_"
         return latest_agent_message + footer, result_session_id
     except Exception as e:
-        _active_codex_proc = None
         log.error("Codex stream error: %s", e)
         return f"Error: {e}", result_session_id
+    finally:
+        progress_stop.set()
+        if progress_task is not None:
+            await asyncio.gather(progress_task, return_exceptions=True)
+        # ella-ai#1174: `busy` is computed from _active_codex_proc.returncode, so ANY path
+        # that leaves this set with a live child pins the bridge busy forever and the queue
+        # never drains. Clearing it here makes that structurally impossible.
+        _active_codex_proc = None
+        _active_codex_started = None
+
+
+async def _wait_child_bounded(proc: asyncio.subprocess.Process) -> None:
+    """Wait for the codex child, with an absolute ceiling and SIGTERM->SIGKILL escalation.
+
+    ella-ai#1174. This replaced a bare `await proc.wait()`, which had NO timeout at all --
+    CODEX_TIMEOUT was only ever applied on the shutdown path, so a child could run
+    unbounded and wedge the bridge (twice on 2026-08-02).
+
+    Deliberately progress-aware: a child that is still emitting events is doing real work
+    and is NOT killed at CODEX_TIMEOUT. Only the absolute CODEX_MAX_RUNTIME ceiling stops
+    it, so we never destroy a healthy long-running turn to satisfy a timer. Stagnation
+    (progress stopped) remains the existing watchdog's job.
+    """
+    started = _active_codex_started or time.time()
+    while True:
+        remaining = CODEX_MAX_RUNTIME - (time.time() - started)
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=min(remaining, 30))
+            return  # exited on its own -- the normal path
+        except asyncio.TimeoutError:
+            continue  # still running; re-check the ceiling
+
+    age = time.time() - started
+    log.error(
+        "Codex child pid=%s exceeded CODEX_MAX_RUNTIME (%.0fs > %ss) -- escalating",
+        proc.pid, age, CODEX_MAX_RUNTIME,
+    )
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
+        log.error("Codex child pid=%s terminated on SIGTERM", proc.pid)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()  # SIGKILL: a child that ignores SIGTERM must not pin busy
+            await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
+            log.error("Codex child pid=%s SIGKILLed after grace", proc.pid)
+        except Exception as exc:
+            log.error("Codex child pid=%s survived SIGKILL: %s", proc.pid, exc)
+    except ProcessLookupError:
+        pass  # already gone between the ceiling check and terminate()
 
 
 # --- Watchdog ---
@@ -2741,6 +2871,25 @@ async def health():
             "automated_runs": _prompt_queue.automated_count() if _prompt_queue else 0,
             "unfinished_runs": _prompt_queue.unfinished_count() if _prompt_queue else 0,
             "busy": _active_codex_proc is not None and _active_codex_proc.returncode is None,
+            # ella-ai#1174: /health returned "ok" while the bridge was wedged for 90min,
+            # because busy alone cannot distinguish "working" from "stuck". These let a
+            # monitor alarm on busy-with-no-progress without guessing.
+            "busy_since": (
+                datetime.fromtimestamp(_active_codex_started, timezone.utc).isoformat()
+                if _active_codex_started else None
+            ),
+            "active_child_age_seconds": (
+                round(time.time() - _active_codex_started, 1) if _active_codex_started else None
+            ),
+            "active_child_pid": (
+                _active_codex_proc.pid
+                if _active_codex_proc is not None and _active_codex_proc.returncode is None
+                else None
+            ),
+            "seconds_since_progress": (
+                round(time.time() - _watchdog_last_progress, 1) if _watchdog_last_progress else None
+            ),
+            "max_runtime_seconds": CODEX_MAX_RUNTIME,
         },
         "last_invocation": state.get("last_invocation"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
