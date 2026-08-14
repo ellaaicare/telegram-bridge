@@ -1,10 +1,11 @@
 import asyncio
 import json
+import os
 import sys
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -16,6 +17,14 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertGreaterEqual(main.CODEX_MAX_RUNTIME, 60)
         self.assertGreaterEqual(main.CODEX_KILL_GRACE, 1)
         self.assertLessEqual(main.CODEX_KILL_GRACE, 60)
+
+    def test_environment_values_are_clamped_and_invalid_values_use_default(self):
+        with patch.dict(os.environ, {"LIMIT": "999999999"}):
+            self.assertEqual(100, main._bounded_int_env("LIMIT", 50, 1, 100))
+        with patch.dict(os.environ, {"LIMIT": "-50"}):
+            self.assertEqual(1, main._bounded_int_env("LIMIT", 50, 1, 100))
+        with patch.dict(os.environ, {"LIMIT": "invalid"}):
+            self.assertEqual(50, main._bounded_int_env("LIMIT", 50, 1, 100))
 
 
 class _Stderr:
@@ -36,6 +45,9 @@ class _Stdout:
             return b'{"type":"thread.started","thread_id":"test"}\n'
         if self.mode == "error":
             raise RuntimeError("stream failed")
+        if self.mode == "delayed":
+            await asyncio.sleep(0.02)
+            self.mode = "lines"
         if self.lines:
             return self.lines.pop(0)
         return b""
@@ -44,7 +56,14 @@ class _Stdout:
 class _Process:
     _next_pid = 41000
 
-    def __init__(self, stdout, *, completed=False):
+    def __init__(
+        self,
+        stdout,
+        *,
+        completed=False,
+        ignore_term=False,
+        ignore_kill=False,
+    ):
         type(self)._next_pid += 1
         self.pid = type(self)._next_pid
         self.stdout = stdout
@@ -52,6 +71,8 @@ class _Process:
         self.returncode = 0 if completed else None
         self.terminated = False
         self.killed = False
+        self.ignore_term = ignore_term
+        self.ignore_kill = ignore_kill
         self._done = asyncio.Event()
         if completed:
             self._done.set()
@@ -62,11 +83,15 @@ class _Process:
 
     def terminate(self):
         self.terminated = True
+        if self.ignore_term:
+            return
         self.returncode = -15
         self._done.set()
 
     def kill(self):
         self.killed = True
+        if self.ignore_kill:
+            return
         self.returncode = -9
         self._done.set()
 
@@ -135,6 +160,72 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(process.terminated)
         self.assertIsNotNone(process.returncode)
         self.assertIn("Error", response)
+
+    async def test_run_cancellation_reaps_child_before_releasing_ownership(self):
+        main.CODEX_MAX_RUNTIME = 10
+        process = _Process(_Stdout("silent"))
+        task = asyncio.create_task(self._run(process))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 0.2)
+        self.assertTrue(process.terminated)
+        self.assertIsNotNone(process.returncode)
+        self.assertIsNone(main._active_codex_proc)
+
+    async def test_sigterm_timeout_escalates_to_sigkill_and_reaps(self):
+        process = _Process(_Stdout("silent"), ignore_term=True)
+        await main._terminate_child(process, "test")
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertIsNotNone(process.returncode)
+
+    async def test_unreaped_sigkill_is_reported_not_swallowed(self):
+        process = _Process(
+            _Stdout("silent"), ignore_term=True, ignore_kill=True
+        )
+        with self.assertRaisesRegex(RuntimeError, "unreaped_after_sigkill"):
+            await main._terminate_child(process, "test")
+        self.assertIsNone(process.returncode)
+
+    async def test_unreaped_child_keeps_bridge_ownership(self):
+        process = _Process(
+            _Stdout("error"), ignore_term=True, ignore_kill=True
+        )
+        with self.assertRaisesRegex(RuntimeError, "unreaped_after_sigkill"):
+            await self._run(process)
+        self.assertIs(main._active_codex_proc, process)
+        self.assertIsNone(process.returncode)
+
+    async def test_suppressed_run_does_not_create_progress_notifier(self):
+        process = _Process(_Stdout("lines", [_agent_message()]), completed=True)
+        with patch.object(
+            main, "_notify_turn_progress", new=AsyncMock()
+        ) as notifier:
+            response, _ = await self._run(process)
+        self.assertEqual("done", response)
+        notifier.assert_not_awaited()
+
+    async def test_blocked_notifier_cannot_delay_completed_turn(self):
+        main.CODEX_PROGRESS_UPDATE_INTERVAL = 0.005
+        process = _Process(
+            _Stdout("delayed", [_agent_message()]), completed=True
+        )
+
+        async def blocked_send(*args, **kwargs):
+            await asyncio.Future()
+
+        with patch.object(main, "send_message", side_effect=blocked_send), patch.object(
+            main.asyncio, "create_subprocess_exec", return_value=process
+        ):
+            response, _ = await asyncio.wait_for(
+                main.run_codex(
+                    "test", 1, ".", suppress_footer=True
+                ),
+                0.2,
+            )
+        self.assertEqual("done", response)
+        self.assertIsNone(main._active_codex_proc)
 
     async def test_progress_notifier_stops_without_false_short_turn_update(self):
         sent = []

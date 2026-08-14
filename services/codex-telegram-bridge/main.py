@@ -53,6 +53,16 @@ def _truthy_env(name: str, default: str = "false") -> bool:
     return os.environ.get(name, default).lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_int_env(
+    name: str, default: int, minimum: int, maximum: int
+) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    return min(maximum, max(minimum, value))
+
+
 def _redact_log_text(raw: str) -> str:
     text = str(raw or "")
     text = re.sub(
@@ -257,19 +267,17 @@ WATCHDOG_COMMAND_TIMEOUT = int(os.environ.get("WATCHDOG_COMMAND_TIMEOUT", "900")
 WATCHDOG_DEFAULT_TIMEOUT = int(os.environ.get("WATCHDOG_DEFAULT_TIMEOUT", "180"))
 WATCHDOG_STAGNATION_KILL = int(os.environ.get("WATCHDOG_STAGNATION_KILL", "1800"))
 # A long-running turn reports progress at this interval without interrupting the child.
-CODEX_PROGRESS_UPDATE_INTERVAL = max(
-    0, int(os.environ.get("CODEX_PROGRESS_UPDATE_INTERVAL", "1800"))
+CODEX_PROGRESS_UPDATE_INTERVAL = _bounded_int_env(
+    "CODEX_PROGRESS_UPDATE_INTERVAL", 1800, 0, 3600
 )
 # ella-ai#1174: absolute ceiling on a single child. The stagnation watchdog above only
 # fires when progress STOPS; a child that keeps emitting events can otherwise run
 # unbounded and head-of-line-block the queue, because `busy` is derived purely from the
 # child's returncode. Keep this materially longer than the progress-update interval so
 # a healthy turn is not mistaken for a status checkpoint.
-CODEX_MAX_RUNTIME = max(60, int(os.environ.get("CODEX_MAX_RUNTIME", "7200")))
+CODEX_MAX_RUNTIME = _bounded_int_env("CODEX_MAX_RUNTIME", 7200, 60, 86400)
 # Grace between SIGTERM and SIGKILL when the ceiling is hit.
-CODEX_KILL_GRACE = max(
-    1, min(60, int(os.environ.get("CODEX_KILL_GRACE", "10")))
-)
+CODEX_KILL_GRACE = _bounded_int_env("CODEX_KILL_GRACE", 10, 1, 60)
 LOG_FILE = os.environ.get(
     "CODEX_BRIDGE_LOG_FILE",
     str(Path.home() / "codex-bridge" / "logs" / "codex-telegram-bridge.log"),
@@ -1422,17 +1430,58 @@ async def run_codex(
         log.error("Codex stream error: %s", e)
         return f"Error: {e}", result_session_id
     finally:
-        progress_stop.set()
-        if progress_task is not None:
-            await asyncio.gather(progress_task, return_exceptions=True)
-        if proc.returncode is None:
-            await _terminate_child(proc, "run_codex exit before child completion")
+        finalizer = asyncio.create_task(
+            _finalize_codex_child(proc, progress_stop, progress_task)
+        )
+        cancellation_requested = False
+        while True:
+            try:
+                await asyncio.shield(finalizer)
+                break
+            except asyncio.CancelledError:
+                # Cleanup owns a separate task, so cancellation of run_codex cannot
+                # release bridge ownership before the child is reaped.
+                cancellation_requested = True
+                continue
+
         # ella-ai#1174: `busy` is computed from _active_codex_proc.returncode, so ANY path
         # that leaves this set with a live child pins the bridge busy forever and the queue
         # never drains. Clearing it here makes that structurally impossible.
-        _active_codex_proc = None
-        _active_codex_started = None
-        _active_codex_started_monotonic = None
+        if proc.returncode is not None:
+            _active_codex_proc = None
+            _active_codex_started = None
+            _active_codex_started_monotonic = None
+        else:
+            log.critical(
+                "Codex child pid=%s is unreaped; bridge remains busy for operator action",
+                proc.pid,
+            )
+            raise RuntimeError("codex_child_unreaped")
+
+        if cancellation_requested:
+            raise asyncio.CancelledError
+
+
+async def _finalize_codex_child(
+    proc: asyncio.subprocess.Process,
+    progress_stop: asyncio.Event,
+    progress_task: asyncio.Task | None,
+) -> None:
+    """Stop auxiliary I/O and prove the child exited before ownership is released."""
+    progress_stop.set()
+    if progress_task is not None:
+        progress_task.cancel()
+
+    if proc.returncode is None:
+        await _terminate_child(proc, "run_codex exit before child completion")
+
+    if progress_task is not None:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(progress_task, return_exceptions=True), timeout=1
+            )
+        except asyncio.TimeoutError:
+            log.warning("Progress notifier did not stop within one second")
 
 
 async def _wait_child_bounded(
@@ -1481,14 +1530,17 @@ async def _terminate_child(
         await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
         log.error("Codex child pid=%s terminated on SIGTERM", proc.pid)
     except asyncio.TimeoutError:
+        proc.kill()  # SIGKILL: a child that ignores SIGTERM must not pin busy
         try:
-            proc.kill()  # SIGKILL: a child that ignores SIGTERM must not pin busy
             await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
-            log.error("Codex child pid=%s SIGKILLed after grace", proc.pid)
-        except Exception as exc:
-            log.error("Codex child pid=%s survived SIGKILL: %s", proc.pid, exc)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("codex_child_unreaped_after_sigkill") from exc
+        log.error("Codex child pid=%s SIGKILLed after grace", proc.pid)
     except ProcessLookupError:
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=CODEX_KILL_GRACE)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("codex_child_unreaped_after_process_lookup") from exc
 
 
 # --- Watchdog ---
