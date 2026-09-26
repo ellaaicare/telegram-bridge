@@ -249,6 +249,12 @@ GROK_BRIDGE_SANDBOX = (
     os.environ.get("GROK_BRIDGE_SANDBOX", "workspace").strip().lower()
     or "workspace"
 )
+# Cursor Agent CLI. Its installer also names the binary `agent`, which collides
+# with Grok Build's `agent` on this host, so call it by explicit path.
+CURSOR_BIN = os.environ.get(
+    "CURSOR_BIN", str(Path.home() / ".local" / "bin" / "cursor-agent")
+).strip()
+CURSOR_BRIDGE_SANDBOX = os.environ.get("CURSOR_BRIDGE_SANDBOX", "").strip().lower()
 TELEGRAM_MAX_LENGTH = 4096
 A2A_GUIDANCE_COOLDOWN_SECONDS = int(
     os.environ.get("A2A_GUIDANCE_COOLDOWN_SECONDS", "300")
@@ -2028,6 +2034,31 @@ async def run_harness(
             "politely explain that you cannot perform those actions from inside the bridge.",
         ])
         cmd.extend(["--cwd", cwd])
+    elif HARNESS_CLI == "cursor":
+        # Cursor Agent CLI, headless. Bills the Cursor plan, not SuperGrok.
+        cmd = [
+            CURSOR_BIN,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--force",
+            "--trust",
+            "--workspace",
+            cwd,
+        ]
+        if sid:
+            cmd.extend(["--resume", sid])
+        if effective_model:
+            cmd.extend(["--model", effective_model])
+        if CURSOR_BRIDGE_SANDBOX in {"enabled", "disabled"}:
+            cmd.extend(["--sandbox", CURSOR_BRIDGE_SANDBOX])
+        # Cursor has no --rules flag; the guard rides at the top of the prompt.
+        cmd.append(
+            "IMPORTANT: You are running inside the Telegram bridge service. "
+            "NEVER run systemctl, service, kill, pkill, or any process management "
+            "commands; they will kill your own host process and crash the bridge.\n\n"
+            + prompt
+        )
     else:
         return f"Error: unsupported harness `{HARNESS_CLI}`", None
 
@@ -2163,6 +2194,26 @@ async def run_harness(
                 elif event_type == "error":
                     message = event.get("message") or event.get("data") or "unknown error"
                     result_text = f"Error: {message}"
+            elif HARNESS_CLI == "cursor":
+                # Cursor stream-json: the final "result" event is handled by
+                # the generic branch above; surface tool starts as progress.
+                if event_type == "tool_call" and event.get("subtype") == "started":
+                    call = event.get("tool_call") or {}
+                    name = next(iter(call), "tool") if isinstance(call, dict) else "tool"
+                    _watchdog_current_tool = {
+                        "name": name,
+                        "command": "",
+                        "input_summary": name,
+                        "started": time.time(),
+                    }
+                    _watchdog_last_progress = time.time()
+                    now = time.time()
+                    if not suppress_progress_messages and now - last_activity_update > 15:
+                        await send_message(chat_id, f"_... {name}_")
+                        last_activity_update = now
+                elif event_type == "tool_call" and event.get("subtype") == "completed":
+                    _watchdog_current_tool = None
+                    _watchdog_last_progress = time.time()
 
         # Wait for process to fully exit
         await proc.wait()
