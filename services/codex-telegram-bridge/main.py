@@ -2508,6 +2508,17 @@ async def _process_prompt(item: dict):
         await _process_checkpoint(item)
         return
 
+    # Cancelled dispatch jobs never run: re-check the job file at dequeue time.
+    _cancel_job_id = item.get("dispatch_job_id")
+    if _cancel_job_id and _dispatch_job_cancelled(_cancel_job_id):
+        log.info("Skipping cancelled dispatch job %s", _cancel_job_id)
+        _write_dispatch_job(
+            _cancel_job_id,
+            state="cancelled",
+            skipped_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+
     global _active_codex_chat_id, _watchdog_current_item, _watchdog_last_progress
     chat_id = item["chat_id"]
     msg_id = item["msg_id"]
@@ -2812,6 +2823,16 @@ def _dispatch_token() -> str:
         return ""
 
 
+def _dispatch_job_cancelled(job_id: str) -> bool:
+    """True when the dispatch job file says 'cancelled' (set via POST /dispatch/{id}/cancel)."""
+    if not job_id or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", job_id):
+        return False
+    try:
+        return json.loads((BRIDGE_DISPATCH_JOB_DIR / f"{job_id}.json").read_text()).get("state") == "cancelled"
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def _write_dispatch_job(job_id: str, **patch) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", job_id):
         raise ValueError("invalid dispatch job id")
@@ -2955,6 +2976,42 @@ async def shutdown():
             _active_codex_proc.terminate()
     save_state()
     log.info("Shutdown complete")
+
+
+@app.post("/dispatch/{job_id}/cancel")
+async def cancel_dispatch(
+    job_id: str,
+    reason: str | None = None,
+    x_dispatch_token: str | None = Header(default=None),
+):
+    """Cancel a QUEUED dispatch job. It is skipped when dequeued and never runs.
+    Running or finished jobs are refused (409): this never kills work in progress."""
+    expected = _dispatch_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="bridge dispatch token is not configured")
+    if not x_dispatch_token or not hmac.compare_digest(x_dispatch_token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", job_id):
+        raise HTTPException(status_code=400, detail="invalid job_id")
+    path = BRIDGE_DISPATCH_JOB_DIR / f"{job_id}.json"
+    try:
+        current = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    previous = current.get("state")
+    if previous == "cancelled":
+        return {"job_id": job_id, "state": "cancelled", "previous_state": previous, "note": "already cancelled"}
+    if previous != "queued":
+        raise HTTPException(status_code=409, detail=f"job is {previous}; only queued jobs can be cancelled")
+    _write_dispatch_job(
+        job_id,
+        state="cancelled",
+        cancelled_at=datetime.now(timezone.utc).isoformat(),
+        cancel_reason=(reason or "")[:200],
+    )
+    log.info("Dispatch job %s cancelled while queued", job_id)
+    return {"job_id": job_id, "state": "cancelled", "previous_state": previous,
+            "effect": "skipped when dequeued; it will never run"}
 
 
 @app.get("/health")
